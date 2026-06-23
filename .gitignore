@@ -1,0 +1,8 @@
+data/raw/
+data/processed/
+wandb/
+__pycache__/
+data/__pycache__/
+*.pth
+outputs/_tmp_*
+.streamlit/
