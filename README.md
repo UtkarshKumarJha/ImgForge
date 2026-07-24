@@ -1,168 +1,504 @@
-# 🔍 ImgForge
+# 🔍 ImgForge — Image Forgery Detection & Tamper Localization
 
-> **Image Forgery Detection & Tamper Localization using Deep Learning**
+**Deep Learning-powered image forensics for detecting manipulated images and identifying suspicious regions.**
 
-A forgery detection system that classifies images as **Authentic or Forged** and pinpoints *exactly where* the tampering occurred — using EfficientNet-B0 with Error Level Analysis fusion and Grad-CAM localization.
+ImgForge is an end-to-end image forgery detection system that classifies an image as **Authentic or Forged** and provides visual explanations of potentially manipulated regions using **Error Level Analysis (ELA)** and **Grad-CAM**.
 
-![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.5-ee4c2c?style=flat-square&logo=pytorch)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.x-ff4b4b?style=flat-square&logo=streamlit)
+The system uses a fine-tuned **EfficientNet-B0** with a custom **4-channel RGB + ELA input**, served through a **FastAPI inference API** and an interactive **React frontend**.
 
 ---
 
-## 🎯 What It Does
+## 🎯 Problem It Solves
 
-Upload any image → ImgForge returns:
+Digital images can be manipulated through techniques such as:
 
-- ✅ / 🚨 **Verdict** — Authentic or Forged
-- 📊 **Confidence score** — model output probability
-- 🗺️ **Grad-CAM heatmap** — visual overlay showing the suspicious region
-- 📍 **Tamper zone** — which of 6 image zones was flagged
-- 🔬 **ELA map** — raw compression artifact analysis
+- Copy-move forgery
+- Image splicing
+- Object insertion/removal
+- Inpainting
+- Re-compression after editing
 
----
+Detecting these modifications manually can be difficult because modern editing tools can produce visually convincing results.
 
-## 🏗️ Architecture
-Input Image
-│
-├── RGB channels (3)
-│
-├── ELA Map ──→ Compression artifact channel (1)
-│
-└── 4-Channel Tensor [R, G, B, ELA]
-│
-▼
-EfficientNet-B0
-(pretrained ImageNet, 4-ch input adapter)
-│
-├── Binary Classification Head
-│         └── Authentic / Forged
-│
-└── Grad-CAM Hooks
-└── Tamper Localization Heatmap
+ImgForge approaches this as a **binary image-forensics problem**:
+
+> Given an image, determine whether it is authentic or manipulated and provide interpretable evidence showing which regions influenced the model's decision.
+
+Instead of returning only a classification label, ImgForge combines deep learning with forensic visualization to make predictions easier to interpret.
 
 ---
 
-## 🔬 Key Engineering Decisions
+## ✨ Features
 
-**1. ELA as a 4th Input Channel**
-Error Level Analysis detects JPEG re-encoding artifacts — tampered regions compress differently from authentic ones. ImgForge fuses ELA directly as a 4th channel alongside RGB rather than treating it as a separate post-processing step. The first conv layer of EfficientNet-B0 is expanded from 3→4 channels via pretrained weight duplication, preserving ImageNet pretraining benefits.
-
-**2. Grad-CAM Tamper Localization**
-Hooks on the final convolutional block produce a spatial activation map showing which regions most influenced the forgery prediction. The map is divided into 6 zones for interpretable, structured reporting rather than a raw heatmap alone.
-
-**3. Class-Weighted Loss**
-CASIA 2.0 has a ~60:40 authentic:tampered ratio. Class weights are computed dynamically from the training split to prevent majority-class bias.
-
-**4. Early Stopping on Macro F1**
-Training monitors macro F1 (not accuracy) to avoid bias toward the majority class — critical for imbalanced forgery detection where false negatives are costly.
+- 🔍 **Image Forgery Detection** — classifies images as Authentic or Forged
+- 📊 **Confidence Scoring** — displays classification confidence and class probabilities
+- 🔬 **Error Level Analysis** — detects JPEG compression inconsistencies
+- 🧠 **RGB + ELA Feature Fusion** — ELA is directly incorporated as a fourth model input channel
+- 🗺️ **Grad-CAM Explainability** — visualizes regions influencing the forged prediction
+- 📍 **Tamper Zone Localization** — divides Grad-CAM activations into six interpretable image regions
+- ⚡ **GPU / CPU Inference** — automatically uses CUDA when available
+- 🌐 **FastAPI Model Serving** — exposes the inference pipeline through a REST API
+- ⚛️ **React Dashboard** — modern interface for image upload and forensic visualization
 
 ---
 
-## 📊 Results
+## 🧠 How ImgForge Works
 
-| Metric | Value |
-|---|---|
-| Best Validation F1 | 0.7767 |
-| Validation Accuracy | 77.6% |
-| Training Dataset | CASIA 2.0 (12,614 images) |
-| Inference (PyTorch, GPU) | ~50ms |
-| Inference (ONNX, CPU) | ~150-200ms |
+```text
+                     Uploaded Image
+                           │
+                           ▼
+                    Image Validation
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+              ▼                         ▼
+          RGB Image             Error Level Analysis
+           3 Channels                1 Channel
+              │                         │
+              └────────────┬────────────┘
+                           │
+                           ▼
+                  4-Channel Tensor
+                   [R, G, B, ELA]
+                           │
+                           ▼
+                   EfficientNet-B0
+                           │
+                    Classification
+                           │
+                 ┌─────────┴─────────┐
+                 ▼                   ▼
+             AUTHENTIC             FORGED
+                                      │
+                                      ▼
+                                   Grad-CAM
+                                      │
+                                      ▼
+                           Suspicious Region Map
+                                      │
+                                      ▼
+                         Six-Zone Localization
+```
+
+The React frontend sends the uploaded image to the FastAPI backend. The backend performs preprocessing, ELA generation, model inference, Grad-CAM generation, and tamper-zone analysis before returning the results to the frontend.
 
 ---
 
-## 🗂️ Dataset
+## 🔬 Model Architecture
 
-**CASIA 2.0** — 12,614 images (7,491 authentic + 5,123 tampered)
+### EfficientNet-B0 + ELA Fusion
+
+ImgForge uses an **ImageNet-pretrained EfficientNet-B0** as its backbone.
+
+A standard EfficientNet accepts:
+
+```text
+RGB → 3 channels
+```
+
+ImgForge modifies the first convolutional layer to accept:
+
+```text
+RGB + ELA → 4 channels
+```
+
+```text
+Input
+  │
+  ├── Red
+  ├── Green
+  ├── Blue
+  └── ELA
+       │
+       ▼
+4 × 224 × 224 Tensor
+       │
+       ▼
+Modified EfficientNet-B0
+       │
+       ▼
+Binary Classification Head
+       │
+   ┌───┴────┐
+   ▼        ▼
+Authentic  Forged
+```
+
+This allows the network to learn simultaneously from **visual image content** and **compression-level forensic artifacts**.
+
+---
+
+## 🔬 Error Level Analysis
+
+Error Level Analysis attempts to reveal differences in JPEG compression levels.
+
+The image is:
+
+1. Loaded and converted to RGB
+2. Recompressed at a controlled JPEG quality
+3. Compared with the original image
+4. Pixel differences are amplified
+5. The resulting ELA map is converted into the model's fourth input channel
+
+Manipulated regions may exhibit compression characteristics different from surrounding image regions.
+
+ELA is used as an additional forensic signal rather than as a standalone forgery detector.
+
+---
+
+## 🗺️ Grad-CAM Explainability
+
+ImgForge uses **Gradient-weighted Class Activation Mapping (Grad-CAM)** to visualize which spatial regions contribute most strongly toward the model's **Forged** class.
+
+The activation map is divided into six regions:
+
+```text
+┌──────────────┬──────────────┐
+│   Top Left   │  Top Right   │
+├──────────────┼──────────────┤
+│   Mid Left   │  Mid Right   │
+├──────────────┼──────────────┤
+│ Bottom Left  │ Bottom Right │
+└──────────────┴──────────────┘
+```
+
+The region with the strongest mean activation is reported as the suspicious region for images classified as forged.
+
+For images classified as authentic, the interface does not claim that a tampered region exists.
+
+> Grad-CAM provides model explainability rather than pixel-perfect tamper segmentation.
+
+---
+
+## 📊 Model Results
+
+| Metric | Result |
+|---|---:|
+| Best Validation Macro-F1 | **0.7767** |
+| Validation Accuracy | **~77.6%** |
+| Dataset | **CASIA 2.0** |
+| Total Images | **12,614** |
+| Authentic Images | **7,491** |
+| Tampered Images | **5,123** |
+| Input Resolution | **224 × 224** |
+| Input Channels | **4 (RGB + ELA)** |
+
+### Dataset Split
 
 | Split | Total | Authentic | Tampered |
-|---|---|---|---|
+|---|---:|---:|---:|
 | Train | 10,091 | 6,014 | 4,077 |
-| Val | 1,261 | 731 | 530 |
+| Validation | 1,261 | 731 | 530 |
 | Test | 1,262 | 746 | 516 |
 
-Forgery types covered: copy-move, splicing, inpainting.
-
-Download: [CASIA 2.0 on Kaggle](https://www.kaggle.com/datasets/divg07/casia-20-image-forgery-detection-dataset)
+The dataset contains multiple forms of image manipulation, including **splicing and copy-move forgery**.
 
 ---
 
-## 🚀 Quick Start
+## ⚙️ Training Strategy
 
-```bash
-git clone https://github.com/MayurDas24/ImgForge.git
-cd ImgForge
+The training pipeline includes:
 
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install albumentations opencv-python pillow numpy scikit-learn matplotlib tqdm wandb streamlit onnx onnxruntime
+- ImageNet-pretrained EfficientNet-B0
+- 4-channel RGB + ELA input
+- Data augmentation using Albumentations
+- Class-weighted loss for dataset imbalance
+- Macro-F1 based model selection
+- Early stopping
+- Weights & Biases experiment tracking
+- Best-checkpoint persistence
 
-# Download CASIA 2.0 to data/raw/CASIA2.0_revised/
-python data/prepare_dataset.py
+Macro-F1 was prioritized over accuracy because the dataset contains an imbalance between authentic and tampered samples.
 
-# Train
-python train.py
+---
 
-# Evaluate on a single image
-python evaluate.py path/to/image.jpg
+## 🛠️ Tech Stack
 
-# Export to ONNX
-python export.py
+### Machine Learning
 
-# Launch demo UI
-streamlit run app.py
+- Python
+- PyTorch
+- Torchvision
+- EfficientNet-B0
+- NumPy
+- OpenCV
+- Pillow
+- Albumentations
+- Scikit-learn
+
+### Explainability & Image Forensics
+
+- Error Level Analysis (ELA)
+- Grad-CAM
+- Six-zone activation localization
+
+### Backend
+
+- FastAPI
+- Uvicorn
+- Python Multipart
+- PyTorch inference
+
+### Frontend
+
+- React
+- Vite
+- JavaScript
+- CSS
+- Lucide React
+
+### ML Engineering
+
+- Weights & Biases
+- ONNX
+- ONNX Runtime
+- CUDA acceleration
+
+---
+
+## 🌐 Application Architecture
+<img width="1892" height="865" alt="image" src="https://github.com/user-attachments/assets/dfc166bf-01c4-4d14-929d-0c8ea6748edf" />
+<img width="1872" height="691" alt="image" src="https://github.com/user-attachments/assets/a9c2a7a3-e2e4-4f4e-b27e-ab1cdd1911e1" />
+<img width="1866" height="852" alt="image" src="https://github.com/user-attachments/assets/a3ba77bc-abda-45a6-a4d7-9c2e8e029932" />
+
+
+
+```text
+React Frontend
+      │
+      │ Image Upload
+      │ multipart/form-data
+      ▼
+FastAPI REST API
+      │
+      ├── Image Validation
+      ├── Preprocessing
+      ├── ELA Generation
+      │
+      ▼
+EfficientNet-B0
+      │
+      ├── Prediction
+      └── Class Probabilities
+      │
+      ▼
+Grad-CAM
+      │
+      └── Six-Zone Localization
+      │
+      ▼
+FastAPI Response
+      │
+      ├── Verdict
+      ├── Confidence
+      ├── Probabilities
+      ├── Tamper Zone
+      ├── ELA Visualization
+      └── Grad-CAM Visualization
+      │
+      ▼
+React Forensic Dashboard
+```
+
+The model is loaded **once when the FastAPI server starts** and reused across inference requests to avoid repeatedly loading the checkpoint.
+
+---
+
+## 📂 Project Structure
+
+```text
+ImgForge/
+│
+├── api/
+│   └── main.py                  # FastAPI inference API
+│
+├── data/
+│   ├── ela.py                   # Error Level Analysis
+│   ├── dataset.py               # PyTorch dataset
+│   └── prepare_dataset.py       # CASIA dataset preparation
+│
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx              # Main React dashboard
+│   │   ├── App.css
+│   │   ├── index.css
+│   │   └── main.jsx
+│   └── package.json
+│
+├── models/
+│   ├── best_model.pth           # PyTorch checkpoint
+│   └── imgforge.onnx            # ONNX model
+│
+├── train.py                     # Training pipeline
+├── evaluate.py                  # Model evaluation
+├── gradcam.py                   # Grad-CAM + zone localization
+├── export.py                    # ONNX export
+├── validator.py
+└── README.md
 ```
 
 ---
 
-## 📁 Repository Structure
-ImgForge/
-├── data/
-│   ├── init.py
-│   ├── ela.py               # ELA computation
-│   ├── dataset.py           # PyTorch Dataset with 4-channel input
-│   └── prepare_dataset.py   # CSV index generator
-├── models/                  # Saved checkpoints (not tracked)
-├── app.py                   # Streamlit demo UI
-├── train.py                 # Training loop with W&B logging
-├── evaluate.py              # Single image inference + visualization
-├── gradcam.py                # Grad-CAM implementation + zone parser
-├── export.py                 # ONNX export + benchmarking
-└── README.md
+## 🚀 Running ImgForge Locally
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/MayurDas24/ImgForge.git
+cd ImgForge
+```
+
+### 2. Install Python dependencies
+
+Create and activate a virtual environment:
+
+```bash
+python -m venv .venv
+```
+
+Windows:
+
+```bash
+.venv\Scripts\activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Start the FastAPI backend
+
+From the project root:
+
+```bash
+python -m uvicorn api.main:app --reload
+```
+
+Backend:
+
+```text
+http://127.0.0.1:8000
+```
+
+Interactive API documentation:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+### 4. Start the React frontend
+
+Open another terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend:
+
+```text
+http://localhost:5173
+```
+
+Upload an image and select **Analyze Image** to run the complete forensic pipeline.
 
 ---
 
-## 🔮 Future Work
+## 📡 API
 
-- **Domain adaptation to ID documents** — fine-tune on labeled Indian government document forgeries (Aadhaar, PAN) once a sufficiently large labeled dataset is available; explored a synthetic tampering pipeline using OpenCV/PIL as a proof of concept
-- **Pixel-level segmentation** — U-Net decoder for pixel-accurate tamper maps instead of zone-level Grad-CAM
-- **Confidence calibration** — temperature scaling to ensure reported confidence reflects true accuracy
-- **TensorRT deployment** — GPU inference under 20ms for video-frame analysis
-- **Structural document validation layer** — rule-based OCR field/format checks (PAN regex, Aadhaar Verhoeff checksum) as a complementary signal alongside pixel forensics
+### `POST /analyze`
+
+Accepts an uploaded JPG/JPEG/PNG image and returns the forensic analysis.
+
+Example response:
+
+```json
+{
+  "filename": "sample.jpg",
+  "verdict": "FORGED",
+  "confidence": 90.63,
+  "forged_probability": 90.63,
+  "authentic_probability": 9.37,
+  "tamper_zone": "Bottom Left",
+  "zone_confidence": 18.92,
+  "model": "EfficientNet-B0 + ELA",
+  "device": "cuda"
+}
+```
+
+The complete response additionally contains Base64-encoded **ELA** and **Grad-CAM** visualizations for rendering by the frontend.
 
 ---
 
-## 🧠 Technical Stack
+## ⚡ Model Export
 
-| Component | Technology |
-|---|---|
-| Training Framework | PyTorch 2.5 |
-| Model Backbone | EfficientNet-B0 (ImageNet pretrained) |
-| Forensic Feature | ELA — Error Level Analysis |
-| Explainability | Grad-CAM (custom implementation) |
-| Augmentation | Albumentations |
-| Experiment Tracking | Weights & Biases |
-| Model Export | ONNX |
-| Demo UI | Streamlit |
+The trained PyTorch model can also be exported to ONNX:
+
+```bash
+python export.py
+```
+
+This enables CPU-oriented inference through ONNX Runtime and provides a path toward production inference optimization.
+
+---
+
+## ⚠️ Limitations
+
+ImgForge is an experimental image-forensics system and should not be treated as a definitive authenticity verification tool.
+
+Current limitations include:
+
+- Training is primarily based on CASIA 2.0
+- Performance may decrease on images from significantly different distributions
+- ELA is primarily meaningful for compression-based forensic analysis
+- Grad-CAM provides coarse model explainability rather than pixel-level segmentation
+- The six-zone localization identifies high-activation regions rather than exact tampered boundaries
+- Model confidence should not be interpreted as forensic certainty
+
+---
+
+## 🔮 Future Improvements
+
+- **Pixel-level localization** using a segmentation architecture such as U-Net
+- **Domain adaptation for identity documents** such as PAN and Aadhaar
+- **Confidence calibration** using temperature scaling
+- **TensorRT deployment** for lower-latency GPU inference
+- Larger and more diverse forgery datasets
+- Dedicated synthetic document-tampering pipeline
+- Structural document validation using OCR and field-level consistency checks
+- Improved localization evaluation against ground-truth tamper masks
+
+---
+
+## 💡 Why I Built ImgForge
+
+ImgForge was built to explore the intersection of **deep learning, computer vision, image forensics, explainable AI, and ML deployment**.
+
+Rather than stopping at model training, the project implements the complete workflow:
+
+**dataset preparation → forensic feature engineering → model training → evaluation → explainability → model serving → React application**
+
+The goal was to understand how a computer vision model can be transformed into an interpretable, end-to-end ML application.
 
 ---
 
 ## 👤 Author
 
-**Mayur Das**
-B.Tech CCE · MIT Manipal, MAHE · Batch 2023–2027
-
-[GitHub](https://github.com/MayurDas24) · [LinkedIn](https://linkedin.com/in/mayurrdas24) · [LeetCode](https://leetcode.com/MayurDas_)
+**Mayur Das**  
+B.Tech — Computer and Communication Engineering  
+MIT Manipal, MAHE · 2023–2027
 
 ---
 
-*Deep learning portfolio project exploring image forensics and forgery detection.*
+## 📄 License
+
+This project is licensed under the MIT License.
+
+---
+
+⭐ If you found ImgForge interesting, consider starring the repository.
