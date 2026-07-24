@@ -5,7 +5,6 @@ from torchvision import models
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 import cv2
 import io
 import os
@@ -20,14 +19,12 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ── Page Setup ────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="ImgForge — Document Forgery Detector",
+    page_title="ImgForge — Image Forgery Detector",
     page_icon="🔍",
     layout="wide"
 )
 
-# ── Styling ───────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
     .main { background-color: #0f1117; }
@@ -85,7 +82,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── Model Loading (cached) ────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
     def build():
@@ -115,9 +111,7 @@ def load_model():
     return model, ckpt["val_f1"], ckpt["epoch"]
 
 
-# ── Preprocessing ─────────────────────────────────────────────────────────────
 def preprocess_pil(pil_image: Image.Image, tmp_path: str):
-    # Save temp file for ELA (needs disk path)
     pil_image.save(tmp_path, format="JPEG", quality=95)
 
     rgb = np.array(pil_image.convert("RGB"), dtype=np.float32) / 255.0
@@ -147,7 +141,6 @@ def preprocess_pil(pil_image: Image.Image, tmp_path: str):
     return tensor, rgb_resized, ela
 
 
-# ── Inference ─────────────────────────────────────────────────────────────────
 def run_inference(model, tensor):
     tensor.requires_grad_(True)
     target_layer = get_gradcam_target_layer(model)
@@ -167,15 +160,6 @@ def run_inference(model, tensor):
     return pred_class, confidence, forged_prob, cam, zone_info
 
 
-# ── Visualization helpers ─────────────────────────────────────────────────────
-def fig_to_pil(fig):
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=120, bbox_inches="tight",
-                facecolor="#0f1117")
-    buf.seek(0)
-    return Image.open(buf)
-
-
 def make_ela_display(ela: np.ndarray) -> np.ndarray:
     ela_bright = np.clip(ela * 3.0, 0, 1)
     return (ela_bright * 255).astype(np.uint8)
@@ -190,13 +174,12 @@ def zone_bar_chart(zone_scores: dict):
     zones = list(zone_scores.keys())
     scores = [zone_scores[z] for z in zones]
     top_zone = max(zone_scores, key=zone_scores.get)
-
     colors = ["#E53E3E" if z == top_zone else "#4A90E2" for z in zones]
 
     fig, ax = plt.subplots(figsize=(6, 2.8), facecolor="#1E2130")
     ax.set_facecolor("#1E2130")
     bars = ax.barh(zones, scores, color=colors, height=0.55)
-    ax.set_xlim(0, max(scores) * 1.3)
+    ax.set_xlim(0, max(scores) * 1.3 if max(scores) > 0 else 1)
     ax.tick_params(colors="#A0AEC0", labelsize=9)
     ax.spines[:].set_visible(False)
     ax.set_xlabel("Activation Score", color="#A0AEC0", fontsize=9)
@@ -209,14 +192,11 @@ def zone_bar_chart(zone_scores: dict):
     return fig
 
 
-# ── UI ────────────────────────────────────────────────────────────────────────
 def main():
-    # Header
     st.markdown("# 🔍 ImgForge")
     st.markdown("#### Image Forgery Detection & Tamper Localization")
     st.markdown("---")
 
-    # Load model
     try:
         model, best_f1, best_epoch = load_model()
         col_s1, col_s2, col_s3 = st.columns(3)
@@ -240,17 +220,14 @@ def main():
         return
 
     st.markdown("---")
-
-    # Upload
     st.markdown("### 📂 Upload Image")
     st.markdown("""<div class='info-box'>
-        Supported: JPG, PNG, TIF, BMP — Aadhaar cards, PAN cards,
-        bank statements, or any document image.
+        Upload any image to check for digital forgery — copy-move, splicing, or inpainting artifacts.
     </div>""", unsafe_allow_html=True)
     st.markdown("")
 
     uploaded = st.file_uploader(
-        "Drop your document here",
+        "Drop your image here",
         type=["jpg", "jpeg", "png", "tif", "tiff", "bmp"],
         label_visibility="collapsed"
     )
@@ -258,16 +235,15 @@ def main():
     if uploaded is None:
         st.markdown("""<div style='text-align:center;color:#4A5568;
             padding:60px;font-size:1rem;'>
-            ↑ Upload a document image to begin analysis
+            ↑ Upload an image to begin analysis
         </div>""", unsafe_allow_html=True)
         return
 
-    # Process
     pil_image = Image.open(uploaded).convert("RGB")
-    tmp_path = f"outputs/_tmp_{uploaded.name}"
     os.makedirs("outputs", exist_ok=True)
+    tmp_path = f"outputs/_tmp_{uploaded.name}"
 
-    with st.spinner("Running DocForge analysis..."):
+    with st.spinner("Running ImgForge analysis..."):
         try:
             tensor, rgb_vis, ela = preprocess_pil(pil_image, tmp_path)
             pred_class, confidence, forged_prob, cam, zone_info = run_inference(model, tensor)
@@ -278,7 +254,6 @@ def main():
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-    # ── Results ───────────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📊 Analysis Results")
 
@@ -323,13 +298,11 @@ def main():
         </div>""", unsafe_allow_html=True)
 
     st.markdown("")
-
-    # ── Three Panel Visualization ─────────────────────────────────────────────
     st.markdown("### 🖼️ Visual Analysis")
     v1, v2, v3 = st.columns(3)
 
     with v1:
-        st.markdown("**Original Document**")
+        st.markdown("**Original Image**")
         st.image(pil_image, use_container_width=True)
 
     with v2:
@@ -351,7 +324,6 @@ def main():
         )
         st.image(heatmap_pil, use_container_width=True)
 
-    # ── Zone Breakdown ────────────────────────────────────────────────────────
     st.markdown("### 📍 Tamper Zone Breakdown")
     z1, z2 = st.columns([1.2, 1])
 
@@ -363,7 +335,7 @@ def main():
     with z2:
         st.markdown("""<div class='info-box' style='margin-top:20px;'>
             <b style='color:#90CDF4;'>How zone detection works:</b><br><br>
-            The document is divided into 6 regions. Grad-CAM activation
+            The image is divided into 6 regions. Grad-CAM activation
             scores indicate which region the model focused on when making
             its forgery decision. Higher scores = more suspicious activity
             in that zone.
@@ -377,19 +349,17 @@ def main():
                 {zone_info['top_zone'].replace('_', ' ').upper()}</b> region
                 with activation score
                 <b style='color:#FEB2B2;'>{zone_info['zone_confidence']:.3f}</b>.
-                Recommend manual review of this document area.
             </div>""", unsafe_allow_html=True)
         else:
             st.markdown("""<div class='info-box' style='margin-top:12px;
                 border-left-color:#38A169;'>
                 ✅ <b style='color:#68D391;'>No significant forgery indicators
-                detected.</b> Document appears authentic.
+                detected.</b>
             </div>""", unsafe_allow_html=True)
 
-    # ── Footer ────────────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("""<div style='text-align:center;color:#4A5568;font-size:0.8rem;'>
-        DocForge — EfficientNet-B0 + ELA Fusion + Grad-CAM Localization<br>
+        ImgForge — EfficientNet-B0 + ELA Fusion + Grad-CAM Localization<br>
         Built by Mayur Das · MIT Manipal, MAHE · github.com/MayurDas24
     </div>""", unsafe_allow_html=True)
 
