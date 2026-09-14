@@ -52,8 +52,33 @@ def _build_efficientnet_b0(in_channels: int, num_classes: int = 2) -> nn.Module:
 
 # ── MLP ──────────────────────────────────────────────────────────────────────
 
+class _MLP(nn.Module):
+    """16×16 adaptive-avg-pool → flatten → FC layers. Trained from scratch."""
+
+    def __init__(self, in_channels: int, num_classes: int = 2,
+                 pool_size: int = 16, hidden: int = 256):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(pool_size)
+        flat_dim = in_channels * pool_size * pool_size
+        self.fc = nn.Sequential(
+            nn.Linear(flat_dim, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(hidden, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.pool(x)
+        x = x.flatten(1)
+        return self.fc(x)
+
+
 def _build_mlp(in_channels: int, num_classes: int = 2) -> nn.Module:
-    raise NotImplementedError("mlp architecture pending (Phase 2)")
+    return _MLP(in_channels, num_classes)
+
 
 # ── ResNet-18 + BiLSTM ───────────────────────────────────────────────────────
 
