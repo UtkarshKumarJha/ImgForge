@@ -1,162 +1,185 @@
+"""Train a forgery-detection model. Config-driven via CLI args."""
+
+import argparse
+import csv
+import os
+import random
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torchvision import models
-import wandb
-from tqdm import tqdm
 from sklearn.metrics import f1_score
-import numpy as np
+from tqdm import tqdm
 
 from data.dataset import ForgeryDataset
+from model_factory import build_model, VALID_ARCHS, VALID_MODES
 
-# ── Config ────────────────────────────────────────────────────────────────────
-CFG = {
-    "data_dir": "data",
-    "image_size":  224,
-    "batch_size":  16,
-    "num_epochs":  50,
-    "lr":          3e-4,
-    "weight_decay":1e-2,
-    "patience":    10,       # early stopping on val F1
-    "num_workers": 0,
-    "device":      "cuda" if torch.cuda.is_available() else "cpu",
-    "run_name":    "docforge-phase2-casia",
-}
 
-# ── W&B Init ──────────────────────────────────────────────────────────────────
-wandb.init(project="docforge", name=CFG["run_name"], config=CFG)
+def seed_everything(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-# ── Dataset & Loaders ─────────────────────────────────────────────────────────
-train_ds = ForgeryDataset(CFG["data_dir"], split="train", image_size=CFG["image_size"])
-val_ds   = ForgeryDataset(CFG["data_dir"], split="val",   image_size=CFG["image_size"])
 
-train_loader = DataLoader(train_ds, batch_size=CFG["batch_size"], shuffle=True,
-                          num_workers=CFG["num_workers"], pin_memory=True)
-val_loader   = DataLoader(val_ds,   batch_size=CFG["batch_size"], shuffle=False,
-                          num_workers=CFG["num_workers"], pin_memory=True)
+def parse_args():
+    p = argparse.ArgumentParser(description="Train forgery detector")
+    p.add_argument("--arch", type=str, default="efficientnet_b0", choices=sorted(VALID_ARCHS))
+    p.add_argument("--input-mode", type=str, default="rgb_ela", choices=sorted(VALID_MODES))
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--data-dir", type=str, default="data")
+    p.add_argument("--image-size", type=int, default=224)
+    p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument("--num-epochs", type=int, default=50)
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--weight-decay", type=float, default=1e-2)
+    p.add_argument("--patience", type=int, default=10)
+    p.add_argument("--num-workers", type=int, default=0)
+    p.add_argument("--ela-quality", type=int, default=75)
+    p.add_argument("--wandb", action="store_true", help="Enable W&B logging")
+    p.add_argument("--out-dir", type=str, default="models")
+    return p.parse_args()
 
-# ── Model: EfficientNet-B0 with 4-channel input ───────────────────────────────
-def build_model(num_classes: int = 2) -> nn.Module:
-    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
 
-    # Expand first conv layer from 3 → 4 channels
-    old_conv = model.features[0][0]
-    new_conv = nn.Conv2d(
-        in_channels=4,
-        out_channels=old_conv.out_channels,
-        kernel_size=old_conv.kernel_size,
-        stride=old_conv.stride,
-        padding=old_conv.padding,
-        bias=False
+def main():
+    args = parse_args()
+    seed_everything(args.seed)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    run_name = f"{args.arch}_{args.input_mode}_s{args.seed}"
+
+    cfg = vars(args)
+    cfg["device"] = device
+    cfg["run_name"] = run_name
+
+    if args.wandb:
+        import wandb
+        wandb.init(project="imgforge", name=run_name, config=cfg)
+
+    train_ds = ForgeryDataset(
+        args.data_dir, split="train", image_size=args.image_size,
+        input_mode=args.input_mode, ela_quality=args.ela_quality,
     )
-    # Copy pretrained RGB weights; initialize ELA channel as mean of RGB weights
-    with torch.no_grad():
-        new_conv.weight[:, :3, :, :] = old_conv.weight
-        new_conv.weight[:, 3:, :, :] = old_conv.weight.mean(dim=1, keepdim=True)
-
-    model.features[0][0] = new_conv
-
-    # Replace classifier head
-    in_features = model.classifier[1].in_features
-    model.classifier = nn.Sequential(
-        nn.Dropout(p=0.3),
-        nn.Linear(in_features, num_classes)
+    val_ds = ForgeryDataset(
+        args.data_dir, split="val", image_size=args.image_size,
+        input_mode=args.input_mode, ela_quality=args.ela_quality,
     )
 
-    return model
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.num_workers, pin_memory=True,
+        generator=torch.Generator().manual_seed(args.seed),
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.num_workers, pin_memory=True,
+    )
 
-model = build_model().to(CFG["device"])
+    model = build_model(args.arch, args.input_mode).to(device)
 
-# ── Class weights for imbalanced dataset ─────────────────────────────────────
-n_auth = sum(1 for _, l in train_ds.samples if l == 0)
-n_tamp = sum(1 for _, l in train_ds.samples if l == 1)
-total  = n_auth + n_tamp
-weights = torch.tensor([total / (2 * n_auth), total / (2 * n_tamp)]).to(CFG["device"])
+    n_auth = sum(1 for _, l in train_ds.samples if l == 0)
+    n_tamp = sum(1 for _, l in train_ds.samples if l == 1)
+    total = n_auth + n_tamp
+    weights = torch.tensor([total / (2 * n_auth), total / (2 * n_tamp)]).to(device)
 
-criterion = nn.CrossEntropyLoss(weight=weights)
-optimizer = torch.optim.AdamW(model.parameters(), lr=CFG["lr"], weight_decay=CFG["weight_decay"])
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=CFG["num_epochs"])
+    criterion = nn.CrossEntropyLoss(weight=weights)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_epochs)
 
-# ── Training Loop ─────────────────────────────────────────────────────────────
-best_val_f1   = 0.0
-patience_ctr  = 0
-best_ckpt     = "models/best_model.pth"
+    os.makedirs(args.out_dir, exist_ok=True)
+    best_ckpt = os.path.join(args.out_dir, f"{run_name}_best.pth")
+    best_val_f1 = 0.0
+    patience_ctr = 0
 
-import os; os.makedirs("models", exist_ok=True)
+    for epoch in range(1, args.num_epochs + 1):
+        model.train()
+        train_loss, train_preds, train_labels = 0.0, [], []
 
-for epoch in range(1, CFG["num_epochs"] + 1):
-
-    # ── Train ──
-    model.train()
-    train_loss, train_preds, train_labels = 0.0, [], []
-
-    for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch}/{CFG['num_epochs']} [Train]"):
-        inputs, labels = inputs.to(CFG["device"]), labels.to(CFG["device"])
-
-        optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        train_loss += loss.item() * inputs.size(0)
-        train_preds.extend(outputs.argmax(1).cpu().numpy())
-        train_labels.extend(labels.cpu().numpy())
-
-    train_loss /= len(train_ds)
-    train_acc   = np.mean(np.array(train_preds) == np.array(train_labels))
-    train_f1    = f1_score(train_labels, train_preds, average="macro")
-
-    # ── Validate ──
-    model.eval()
-    val_loss, val_preds, val_labels = 0.0, [], []
-
-    with torch.no_grad():
-        for inputs, labels in tqdm(val_loader, desc=f"Epoch {epoch}/{CFG['num_epochs']} [Val]"):
-            inputs, labels = inputs.to(CFG["device"]), labels.to(CFG["device"])
+        for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch}/{args.num_epochs} [Train]"):
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
-            val_loss += loss.item() * inputs.size(0)
-            val_preds.extend(outputs.argmax(1).cpu().numpy())
-            val_labels.extend(labels.cpu().numpy())
+            train_loss += loss.item() * inputs.size(0)
+            train_preds.extend(outputs.argmax(1).cpu().numpy())
+            train_labels.extend(labels.cpu().numpy())
 
-    val_loss /= len(val_ds)
-    val_acc   = np.mean(np.array(val_preds) == np.array(val_labels))
-    val_f1    = f1_score(val_labels, val_preds, average="macro")
+        train_loss /= len(train_ds)
+        train_acc = np.mean(np.array(train_preds) == np.array(train_labels))
+        train_f1 = f1_score(train_labels, train_preds, average="macro")
 
-    scheduler.step()
+        model.eval()
+        val_loss, val_preds, val_labels = 0.0, [], []
 
-    # ── Log to W&B ──
-    wandb.log({
-        "epoch": epoch,
-        "train/loss": train_loss, "train/acc": train_acc, "train/f1": train_f1,
-        "val/loss":   val_loss,   "val/acc":   val_acc,   "val/f1":   val_f1,
-        "lr": scheduler.get_last_lr()[0]
-    })
+        with torch.no_grad():
+            for inputs, labels in tqdm(val_loader, desc=f"Epoch {epoch}/{args.num_epochs} [Val]"):
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
 
-    print(f"Epoch {epoch:02d} | Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} F1: {train_f1:.4f} "
-          f"| Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} F1: {val_f1:.4f}")
+                val_loss += loss.item() * inputs.size(0)
+                val_preds.extend(outputs.argmax(1).cpu().numpy())
+                val_labels.extend(labels.cpu().numpy())
 
-    # ── Checkpoint & Early Stopping ──
-    if val_f1 > best_val_f1:
-        best_val_f1 = val_f1
-        patience_ctr = 0
-        torch.save({
+        val_loss /= len(val_ds)
+        val_acc = np.mean(np.array(val_preds) == np.array(val_labels))
+        val_f1 = f1_score(val_labels, val_preds, average="macro")
+
+        scheduler.step()
+
+        log = {
             "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "val_f1": val_f1,
-            "val_acc": val_acc,
-            "cfg": CFG
-        }, best_ckpt)
-        print(f"  ✓ New best model saved (val_f1={val_f1:.4f})")
-        wandb.save(best_ckpt)
-    else:
-        patience_ctr += 1
-        if patience_ctr >= CFG["patience"]:
-            print(f"Early stopping at epoch {epoch} (no improvement for {CFG['patience']} epochs)")
-            break
+            "train/loss": train_loss, "train/acc": train_acc, "train/f1": train_f1,
+            "val/loss": val_loss, "val/acc": val_acc, "val/f1": val_f1,
+            "lr": scheduler.get_last_lr()[0],
+        }
 
-print(f"\nTraining complete. Best val F1: {best_val_f1:.4f}")
-wandb.finish()
+        if args.wandb:
+            import wandb
+            wandb.log(log)
+
+        print(f"Epoch {epoch:02d} | Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} F1: {train_f1:.4f} "
+              f"| Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} F1: {val_f1:.4f}")
+
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            patience_ctr = 0
+            torch.save({
+                "epoch": epoch,
+                "arch": args.arch,
+                "input_mode": args.input_mode,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_f1": val_f1,
+                "val_acc": val_acc,
+                "cfg": cfg,
+            }, best_ckpt)
+            print(f"  > New best model saved (val_f1={val_f1:.4f})")
+            if args.wandb:
+                import wandb
+                wandb.save(best_ckpt)
+        else:
+            patience_ctr += 1
+            if patience_ctr >= args.patience:
+                print(f"Early stopping at epoch {epoch} (no improvement for {args.patience} epochs)")
+                break
+
+    print(f"\nTraining complete. Best val F1: {best_val_f1:.4f}")
+    print(f"Checkpoint: {best_ckpt}")
+
+    if args.wandb:
+        import wandb
+        wandb.finish()
+
+    return best_ckpt, best_val_f1
+
+
+if __name__ == "__main__":
+    main()
