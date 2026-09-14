@@ -122,7 +122,13 @@ def _build_resnet18_bilstm(in_channels: int, num_classes: int = 2) -> nn.Module:
 # ── Swin-Tiny ────────────────────────────────────────────────────────────────
 
 def _build_swin_tiny(in_channels: int, num_classes: int = 2) -> nn.Module:
-    raise NotImplementedError("swin_tiny architecture pending (Phase 2)")
+    model = models.swin_t(weights=models.Swin_T_Weights.DEFAULT)
+    # Patch embedding is features[0][0]: Conv2d(3, 96, 4×4, stride=4)
+    model.features[0][0] = _adapt_conv(model.features[0][0], in_channels)
+    in_features = model.head.in_features
+    model.head = nn.Linear(in_features, num_classes)
+    return model
+
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 
