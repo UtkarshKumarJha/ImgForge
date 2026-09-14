@@ -11,3 +11,7 @@ opencv-python-headless
 matplotlib
 
 scikit-learn
+imagehash
+albumentations
+tqdm
+wandb

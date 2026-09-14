@@ -1,193 +1,150 @@
-#evaluate.py
-import torch
-import torch.nn as nn
-from torchvision import models
-import numpy as np
-from PIL import Image
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import cv2
+"""Batch evaluation: accuracy, precision, recall, F1, ROC-AUC, PR-AUC + 95% bootstrap CIs."""
+
+import argparse
+import csv
+import json
 import os
 
-from data.ela import compute_ela
-from gradcam import GradCAM, overlay_heatmap, parse_tamper_zone, get_gradcam_target_layer
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    average_precision_score,
+)
 
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD  = [0.229, 0.224, 0.225]
-IMAGE_SIZE    = 224
-CHECKPOINT    = "models/best_model.pth"
-
-
-# ── Build model (must match train.py exactly) ─────────────────────────────────
-def build_model(num_classes: int = 2) -> nn.Module:
-    model = models.efficientnet_b0(weights=None)
-
-    old_conv = model.features[0][0]
-    new_conv = nn.Conv2d(
-        in_channels=4,
-        out_channels=old_conv.out_channels,
-        kernel_size=old_conv.kernel_size,
-        stride=old_conv.stride,
-        padding=old_conv.padding,
-        bias=False
-    )
-    model.features[0][0] = new_conv
-
-    in_features = model.classifier[1].in_features
-    model.classifier = nn.Sequential(
-        nn.Dropout(p=0.3),
-        nn.Linear(in_features, num_classes)
-    )
-    return model
+from data.dataset import ForgeryDataset
+from model_factory import build_model
 
 
-# ── Load checkpoint ───────────────────────────────────────────────────────────
-def load_model(checkpoint_path: str, device: str) -> nn.Module:
-    model = build_model()
-    ckpt = torch.load(checkpoint_path, map_location=device,weights_only=False)
+def bootstrap_ci(y_true, y_pred, y_prob, metric_fn, n_boot=2000, ci=0.95, rng=None):
+    """Compute a bootstrap confidence interval for a metric."""
+    if rng is None:
+        rng = np.random.default_rng(0)
+    n = len(y_true)
+    scores = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        yt, yp, ypr = y_true[idx], y_pred[idx], y_prob[idx]
+        if len(np.unique(yt)) < 2:
+            continue
+        try:
+            scores.append(metric_fn(yt, yp, ypr))
+        except Exception:
+            continue
+    if not scores:
+        return (float("nan"), float("nan"))
+    alpha = (1 - ci) / 2
+    lo = float(np.percentile(scores, 100 * alpha))
+    hi = float(np.percentile(scores, 100 * (1 - alpha)))
+    return (lo, hi)
+
+
+def _acc(yt, yp, _):    return accuracy_score(yt, yp)
+def _prec(yt, yp, _):   return precision_score(yt, yp, zero_division=0)
+def _rec(yt, yp, _):    return recall_score(yt, yp, zero_division=0)
+def _f1(yt, yp, _):     return f1_score(yt, yp, average="macro", zero_division=0)
+def _roc(yt, _, ypr):   return roc_auc_score(yt, ypr)
+def _pr(yt, _, ypr):    return average_precision_score(yt, ypr)
+
+
+def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
+             batch_size: int = 16, num_workers: int = 0, n_boot: int = 2000,
+             ela_quality: int = 75):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    cfg = ckpt.get("cfg", {})
+    arch = cfg.get("arch", "efficientnet_b0")
+    input_mode = cfg.get("input_mode", "rgb_ela")
+
+    model = build_model(arch, input_mode)
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device)
     model.eval()
-    print(f"Model loaded — best val F1: {ckpt['val_f1']:.4f} (epoch {ckpt['epoch']})")
-    return model
+    print(f"Loaded {arch}/{input_mode} from {checkpoint_path} "
+          f"(val_f1={ckpt.get('val_f1', '?')})")
 
-
-# ── Preprocess a single image into 4-channel tensor ──────────────────────────
-def preprocess(image_path: str, device: str) -> tuple:
-    # Load RGB
-    rgb = np.array(Image.open(image_path).convert("RGB"), dtype=np.float32) / 255.0
-
-    # Resize
-    rgb_resized = np.array(
-        Image.fromarray((rgb * 255).astype(np.uint8)).resize(
-            (IMAGE_SIZE, IMAGE_SIZE), Image.BILINEAR
-        ), dtype=np.float32
-    ) / 255.0
-
-    # Normalize (ImageNet)
-    mean = np.array(IMAGENET_MEAN, dtype=np.float32)
-    std  = np.array(IMAGENET_STD,  dtype=np.float32)
-    rgb_norm = (rgb_resized - mean) / std  # (H, W, 3)
-
-    # ELA channel
-    ela = compute_ela(image_path)
-    ela_resized = np.array(
-        Image.fromarray((ela * 255).astype(np.uint8)).resize(
-            (IMAGE_SIZE, IMAGE_SIZE), Image.BILINEAR
-        ), dtype=np.float32
-    ) / 255.0
-    ela_gray = ela_resized.mean(axis=2)
-    ela_gray = (ela_gray - 0.5) / 0.5  # (H, W)
-
-    # Stack to (1, 4, H, W)
-    rgb_t = torch.from_numpy(rgb_norm.transpose(2, 0, 1)).float()
-    ela_t = torch.from_numpy(ela_gray).unsqueeze(0).float()
-    tensor = torch.cat([rgb_t, ela_t], dim=0).unsqueeze(0).to(device)
-
-    return tensor, rgb_resized  # tensor for model, rgb for visualization
-
-
-# ── Run inference + Grad-CAM on a single image ───────────────────────────────
-def analyze(image_path: str, save_dir: str = "outputs"):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    os.makedirs(save_dir, exist_ok=True)
-
-    # Load model
-    model = load_model(CHECKPOINT, device)
-
-    # Set up Grad-CAM
-    target_layer = get_gradcam_target_layer(model)
-    gradcam = GradCAM(model, target_layer)
-
-    # Preprocess
-    tensor, rgb_vis = preprocess(image_path, device)
-    tensor.requires_grad_(True)
-
-    # Forward pass
-    with torch.enable_grad():
-        output = model(tensor)
-
-    probs = torch.softmax(output, dim=1)[0]
-    pred_class = output.argmax(dim=1).item()
-    confidence = probs[pred_class].item()
-
-    label = "FORGED" if pred_class == 1 else "AUTHENTIC"
-    forged_prob = probs[1].item()
-
-    print(f"\n{'='*50}")
-    print(f"Image     : {image_path}")
-    print(f"Prediction: {label}")
-    print(f"Confidence: {confidence:.4f} ({confidence*100:.1f}%)")
-    print(f"Forged prob: {forged_prob:.4f}")
-
-    # Grad-CAM
-    cam = gradcam.generate(tensor, class_idx=1)
-    zone_info = parse_tamper_zone(cam)
-
-    print(f"Tamper Zone: {zone_info['top_zone']}")
-    print(f"Zone Confidence: {zone_info['zone_confidence']}")
-    print(f"Zone Scores: {zone_info['zone_scores']}")
-    print(f"{'='*50}\n")
-
-    # ── Visualization ─────────────────────────────────────────────────────────
-    original_bgr = (rgb_vis * 255).astype(np.uint8)
-
-    # ELA map
-    ela_raw = compute_ela(image_path)
-    ela_display = (ela_raw * 255).astype(np.uint8)
-    ela_resized_display = cv2.resize(
-        ela_display, (IMAGE_SIZE, IMAGE_SIZE)
+    ds = ForgeryDataset(
+        data_dir, split=split, image_size=cfg.get("image_size", 224),
+        input_mode=input_mode, ela_quality=ela_quality,
     )
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=False,
+                        num_workers=num_workers, pin_memory=False)
 
-    # Grad-CAM overlay
-    heatmap_overlay = overlay_heatmap(original_bgr, cam, alpha=0.5)
+    all_labels, all_preds, all_probs = [], [], []
+    with torch.no_grad():
+        for inputs, labels in loader:
+            inputs = inputs.to(device)
+            outputs = model(inputs)
+            probs = torch.softmax(outputs, dim=1)[:, 1].cpu().numpy()
+            preds = outputs.argmax(1).cpu().numpy()
 
-    # Plot 3 panels: Original | ELA | Grad-CAM
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    fig.suptitle(
-        f"DocForge Analysis — {label} ({confidence*100:.1f}% confidence)\n"
-        f"Tamper Zone: {zone_info['top_zone']}",
-        fontsize=13, fontweight="bold",
-        color="red" if pred_class == 1 else "green"
-    )
+            all_labels.extend(labels.numpy())
+            all_preds.extend(preds)
+            all_probs.extend(probs)
 
-    axes[0].imshow(original_bgr)
-    axes[0].set_title("Original Document", fontsize=11)
-    axes[0].axis("off")
+    y_true = np.array(all_labels)
+    y_pred = np.array(all_preds)
+    y_prob = np.array(all_probs)
 
-    axes[1].imshow(ela_resized_display)
-    axes[1].set_title("ELA Map (Compression Artifacts)", fontsize=11)
-    axes[1].axis("off")
+    metrics = {}
+    rng = np.random.default_rng(0)
 
-    axes[2].imshow(heatmap_overlay)
-    axes[2].set_title(f"Grad-CAM Heatmap\n(Red = Suspicious Region)", fontsize=11)
-    axes[2].axis("off")
+    for name, fn in [("accuracy", _acc), ("precision", _prec), ("recall", _rec),
+                     ("f1_macro", _f1), ("roc_auc", _roc), ("pr_auc", _pr)]:
+        try:
+            val = fn(y_true, y_pred, y_prob)
+        except Exception:
+            val = float("nan")
+        lo, hi = bootstrap_ci(y_true, y_pred, y_prob, fn, n_boot=n_boot, rng=rng)
+        metrics[name] = {"value": round(val, 4), "ci_lo": round(lo, 4), "ci_hi": round(hi, 4)}
 
-    plt.tight_layout()
+    print(f"\n{'Metric':<15} {'Value':>8}  {'95% CI':>18}")
+    print("-" * 45)
+    for name, m in metrics.items():
+        print(f"{name:<15} {m['value']:>8.4f}  [{m['ci_lo']:.4f}, {m['ci_hi']:.4f}]")
 
-    # Save
-    basename = os.path.splitext(os.path.basename(image_path))[0]
-    save_path = os.path.join(save_dir, f"{basename}_analysis.png")
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
-    print(f"Saved to: {save_path}")
-
-    return {
-        "label": label,
-        "confidence": round(confidence, 4),
-        "forged_prob": round(forged_prob, 4),
-        "tamper_zone": zone_info["top_zone"],
-        "zone_confidence": zone_info["zone_confidence"]
+    result = {
+        "checkpoint": checkpoint_path,
+        "arch": arch,
+        "input_mode": input_mode,
+        "seed": cfg.get("seed", "?"),
+        "split": split,
+        "n_samples": len(y_true),
+        "metrics": metrics,
     }
+    return result
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+def main():
+    p = argparse.ArgumentParser(description="Evaluate a trained model on a test split")
+    p.add_argument("checkpoint", help="Path to model .pth checkpoint")
+    p.add_argument("--data-dir", default="data")
+    p.add_argument("--split", default="test")
+    p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument("--num-workers", type=int, default=0)
+    p.add_argument("--n-boot", type=int, default=2000)
+    p.add_argument("--ela-quality", type=int, default=75)
+    p.add_argument("--out-json", type=str, default=None, help="Write results to JSON file")
+    args = p.parse_args()
+
+    result = evaluate(
+        args.checkpoint, args.data_dir, split=args.split,
+        batch_size=args.batch_size, num_workers=args.num_workers,
+        n_boot=args.n_boot, ela_quality=args.ela_quality,
+    )
+
+    if args.out_json:
+        os.makedirs(os.path.dirname(args.out_json) or ".", exist_ok=True)
+        with open(args.out_json, "w") as f:
+            json.dump(result, f, indent=2)
+        print(f"\nResults written to {args.out_json}")
+
+
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) < 2:
-        print("Usage: python evaluate.py <path_to_image>")
-        print("Example: python evaluate.py data/raw/CASIA2.0_revised/Tp/Tp_D_CND_M_N_ani00018_ani00018_0279.jpg")
-        sys.exit(1)
-
-    result = analyze(sys.argv[1])
+    main()

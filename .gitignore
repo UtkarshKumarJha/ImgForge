@@ -1,8 +1,11 @@
 data/raw/
 data/processed/
+data/ela_cache/
 wandb/
 __pycache__/
-data/__pycache__/
 *.pth
-outputs/_tmp_*
+*.onnx
+outputs/
+results/
+.venv/
 .streamlit/
