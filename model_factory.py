@@ -82,8 +82,42 @@ def _build_mlp(in_channels: int, num_classes: int = 2) -> nn.Module:
 
 # ── ResNet-18 + BiLSTM ───────────────────────────────────────────────────────
 
+class _ResNet18BiLSTM(nn.Module):
+    """ResNet-18 trunk → raster-flatten feature map → BiLSTM → classifier."""
+
+    def __init__(self, backbone: nn.Module, lstm_hidden: int = 256,
+                 num_classes: int = 2):
+        super().__init__()
+        self.backbone = backbone
+        # ResNet-18 feature map: (B, 512, 7, 7) → 49 positions × 512 features
+        self.lstm = nn.LSTM(
+            input_size=512, hidden_size=lstm_hidden,
+            batch_first=True, bidirectional=True,
+        )
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(lstm_hidden * 2, num_classes),
+        )
+
+    def forward(self, x):
+        feat = self.backbone(x)                     # (B, 512, H, W)
+        b, c, h, w = feat.shape
+        seq = feat.reshape(b, c, h * w).permute(0, 2, 1)  # (B, H*W, 512)
+        lstm_out, _ = self.lstm(seq)                # (B, H*W, 2*hidden)
+        pooled = lstm_out.mean(dim=1)               # (B, 2*hidden)
+        return self.classifier(pooled)
+
+
 def _build_resnet18_bilstm(in_channels: int, num_classes: int = 2) -> nn.Module:
-    raise NotImplementedError("resnet18_bilstm architecture pending (Phase 2)")
+    resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+    resnet.conv1 = _adapt_conv(resnet.conv1, in_channels)
+    # Strip avgpool + fc to get the conv backbone only
+    backbone = nn.Sequential(
+        resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool,
+        resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4,
+    )
+    return _ResNet18BiLSTM(backbone, num_classes=num_classes)
+
 
 # ── Swin-Tiny ────────────────────────────────────────────────────────────────
 
