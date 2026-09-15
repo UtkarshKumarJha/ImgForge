@@ -39,12 +39,12 @@ def compute_ela(image_path: str, quality: int = 75, amplify: int = 10) -> np.nda
     """Compute Error Level Analysis map for an image.
 
     Returns: ELA map as float32 array, shape (H, W, 3), values in [0, 1].
-    Caches to disk when IMGFORGE_ELA_CACHE env var is set.
+    Caches to disk as uint8 when IMGFORGE_ELA_CACHE env var is set.
     """
     cp = _ela_cache_path(image_path, quality)
     if cp and os.path.exists(cp):
         try:
-            return np.load(cp)
+            return np.load(cp).astype(np.float32) / 255.0
         except Exception:
             os.remove(cp)
 
@@ -57,11 +57,10 @@ def compute_ela(image_path: str, quality: int = 75, amplify: int = 10) -> np.nda
     recompressed = np.array(Image.open(buffer).convert("RGB"), dtype=np.float32)
 
     ela = np.abs(original - recompressed) * amplify
-    ela = np.clip(ela, 0, 255) / 255.0
-    ela = ela.astype(np.float32)
+    ela = np.clip(ela, 0, 255)
 
     if cp:
         os.makedirs(os.path.dirname(cp), exist_ok=True)
-        np.save(cp, ela)
+        np.save(cp, ela.astype(np.uint8))
 
-    return ela
+    return (ela / 255.0).astype(np.float32)

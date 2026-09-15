@@ -15,6 +15,20 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+
+def _disk_free_gb(path: str = ".") -> float:
+    st = os.statvfs(path)
+    return (st.f_bavail * st.f_frsize) / (1024 ** 3)
+
+
+def _disk_report(label: str = ""):
+    free = _disk_free_gb(".")
+    tag = f" [{label}]" if label else ""
+    print(f"  Disk free{tag}: {free:.1f} GB")
+    if free < 1.0:
+        print("  WARNING: less than 1 GB free — risk of torch.save failures!")
+    return free
+
 ARCHS = ["efficientnet_b0", "mlp", "resnet18_bilstm", "swin_tiny"]
 INPUT_MODES = ["rgb", "ela", "rgb_ela"]
 SEEDS = [1, 2, 3]
@@ -47,12 +61,14 @@ def warmup_ela_cache(data_dir: str, ela_quality: int, cache_dir: str):
 
     cached = sum(1 for _ in Path(cache_dir).glob("*.npy"))
     print(f"ELA cache: {len(all_paths)} images, {cached} already cached")
+    _disk_report("before warmup")
 
     for path in tqdm(sorted(all_paths), desc="Warming ELA cache"):
         compute_ela(path, quality=ela_quality)
 
     final = sum(1 for _ in Path(cache_dir).glob("*.npy"))
     print(f"ELA cache ready: {final} files")
+    _disk_report("after warmup")
 
 
 def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | None):
@@ -107,6 +123,14 @@ def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
     ckpt_path = os.path.join(args.out_dir, f"{run_name}_best.pth")
     json_path = os.path.join(args.results_dir, f"{run_name}.json")
 
+    print(f"\n{'='*60}")
+    print(f"TRAIN: {run_name}")
+    print(f"{'='*60}")
+    free = _disk_report("before training")
+    if free < 0.5:
+        print("SKIPPED: not enough disk space to save checkpoint")
+        return False
+
     train_cmd = [
         sys.executable, "train.py",
         "--arch", arch,
@@ -122,12 +146,13 @@ def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
     if args.wandb:
         train_cmd.append("--wandb")
 
-    print(f"\n{'='*60}")
-    print(f"TRAIN: {run_name}")
-    print(f"{'='*60}")
     ret = subprocess.run(train_cmd)
     if ret.returncode != 0:
         print(f"FAILED: train.py returned {ret.returncode}")
+        corrupt = ckpt_path
+        if os.path.exists(corrupt):
+            os.remove(corrupt)
+            print(f"  Cleaned up corrupt checkpoint: {corrupt}")
         return False
 
     if not os.path.exists(ckpt_path):
@@ -161,6 +186,10 @@ def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
         print(f"FAILED: experiment_log.py returned {ret.returncode}")
         return False
 
+    if os.path.exists(json_path):
+        os.remove(json_path)
+
+    _disk_report("after run")
     return True
 
 
