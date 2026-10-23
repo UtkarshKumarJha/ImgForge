@@ -52,15 +52,56 @@ def _roc(yt, _, ypr):   return roc_auc_score(yt, ypr)
 def _pr(yt, _, ypr):    return average_precision_score(yt, ypr)
 
 
+def tune_threshold(y_true, y_prob, lo: float = 0.01, hi: float = 0.99,
+                   step: float = 0.01) -> float:
+    """Probability cut maximising macro F1 on validation predictions."""
+    if len(np.unique(y_true)) < 2:
+        return 0.5
+    best_t, best_f1 = 0.5, -1.0
+    for t in np.arange(lo, hi + 1e-9, step):
+        f1 = f1_score(y_true, (y_prob >= t).astype(int), average="macro", zero_division=0)
+        if f1 > best_f1:
+            best_t, best_f1 = float(t), f1
+    return best_t
+
+
+def predict(model, loader, device, tta: bool = False):
+    """Return (y_true, y_prob, paths) in dataset order; TTA averages the h-flip."""
+    model.eval()
+    all_labels, all_probs = [], []
+    with torch.no_grad():
+        for inputs, labels in loader:
+            inputs = inputs.to(device)
+            probs = torch.softmax(model(inputs), dim=1)[:, 1]
+            if tta:
+                flipped = torch.softmax(model(torch.flip(inputs, dims=[3])), dim=1)[:, 1]
+                probs = (probs + flipped) / 2
+            all_probs.extend(probs.cpu().numpy().tolist())
+            all_labels.extend(labels.numpy().tolist())
+    paths = [s[0] for s in loader.dataset.samples]
+    return np.array(all_labels), np.array(all_probs), paths
+
+
+def save_predictions(path: str, paths, y_true, y_prob) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    np.savez(path, paths=np.array(paths), labels=np.asarray(y_true), probs=np.asarray(y_prob))
+
+
+def is_degenerate(pred) -> bool:
+    return len(np.unique(pred)) == 1
+
+
 def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
              batch_size: int = 16, num_workers: int = 0, n_boot: int = 2000,
-             ela_quality: int = 75):
+             ela_quality: int = 75, tta: bool = False,
+             threshold: float | None = None):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     cfg = ckpt.get("cfg", {})
     arch = cfg.get("arch", "efficientnet_b0")
     input_mode = cfg.get("input_mode", "rgb_ela")
+    run_name = cfg.get("run_name") or os.path.splitext(os.path.basename(checkpoint_path))[0]
 
     model = build_from_checkpoint(ckpt)
     model.load_state_dict(ckpt["model_state_dict"])
@@ -69,28 +110,32 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
     print(f"Loaded {arch}/{input_mode} from {checkpoint_path} "
           f"(val_f1={ckpt.get('val_f1', '?')})")
 
-    ds = ForgeryDataset(
-        data_dir, split=split, image_size=cfg.get("image_size", 224),
-        input_mode=input_mode, ela_quality=ela_quality,
-    )
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=False,
-                        num_workers=num_workers, pin_memory=False)
+    def loader_for(s):
+        ds = ForgeryDataset(
+            data_dir, split=s, image_size=cfg.get("image_size", 224),
+            input_mode=input_mode, ela_quality=ela_quality,
+        )
+        return DataLoader(ds, batch_size=batch_size, shuffle=False,
+                          num_workers=num_workers, pin_memory=False)
 
-    all_labels, all_preds, all_probs = [], [], []
-    with torch.no_grad():
-        for inputs, labels in loader:
-            inputs = inputs.to(device)
-            outputs = model(inputs)
-            probs = torch.softmax(outputs, dim=1)[:, 1].cpu().numpy()
-            preds = outputs.argmax(1).cpu().numpy()
+    target_loader = loader_for(split)
+    y_true, y_prob, paths = predict(model, target_loader, device, tta=tta)
 
-            all_labels.extend(labels.numpy())
-            all_preds.extend(preds)
-            all_probs.extend(probs)
+    if threshold is None:
+        if split == "val":
+            threshold = tune_threshold(y_true, y_prob)
+        else:
+            val_true, val_prob, _ = predict(model, loader_for("val"), device, tta=tta)
+            threshold = tune_threshold(val_true, val_prob)
 
-    y_true = np.array(all_labels)
-    y_pred = np.array(all_preds)
-    y_prob = np.array(all_probs)
+    if tta:
+        _, y_prob_no_tta, _ = predict(model, target_loader, device, tta=False)
+    else:
+        y_prob_no_tta = y_prob
+
+    y_pred = (y_prob >= threshold).astype(int)
+    pred_path = os.path.join("predictions", f"{run_name}_{split}.npz")
+    save_predictions(pred_path, paths, y_true, y_prob)
 
     metrics = {}
     rng = np.random.default_rng(0)
@@ -104,10 +149,20 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
         lo, hi = bootstrap_ci(y_true, y_pred, y_prob, fn, n_boot=n_boot, rng=rng)
         metrics[name] = {"value": round(val, 4), "ci_lo": round(lo, 4), "ci_hi": round(hi, 4)}
 
+    f1_argmax = float(f1_score(y_true, (y_prob >= 0.5).astype(int),
+                               average="macro", zero_division=0))
+    f1_no_tta = float(f1_score(y_true, (y_prob_no_tta >= threshold).astype(int),
+                               average="macro", zero_division=0))
+    degenerate = is_degenerate(y_pred)
+
     print(f"\n{'Metric':<15} {'Value':>8}  {'95% CI':>18}")
     print("-" * 45)
     for name, m in metrics.items():
         print(f"{name:<15} {m['value']:>8.4f}  [{m['ci_lo']:.4f}, {m['ci_hi']:.4f}]")
+    print(f"\nthreshold={threshold:.2f}  tta={tta}  f1_argmax={f1_argmax:.4f}  "
+          f"f1_tuned={metrics['f1_macro']['value']:.4f}  "
+          f"f1_tuned_no_tta={f1_no_tta:.4f}  degenerate={degenerate}")
+    print(f"Predictions written to {pred_path}")
 
     result = {
         "checkpoint": checkpoint_path,
@@ -117,6 +172,12 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
         "split": split,
         "n_samples": len(y_true),
         "metrics": metrics,
+        "tta": tta,
+        "decision_threshold": round(float(threshold), 4),
+        "f1_macro_argmax": round(f1_argmax, 4),
+        "f1_macro_tuned": metrics["f1_macro"]["value"],
+        "f1_macro_tuned_no_tta": round(f1_no_tta, 4),
+        "degenerate": degenerate,
     }
     return result
 
@@ -130,6 +191,10 @@ def main():
     p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--n-boot", type=int, default=2000)
     p.add_argument("--ela-quality", type=int, default=75)
+    p.add_argument("--tta", action="store_true",
+                   help="Average probabilities over the image and its horizontal flip")
+    p.add_argument("--threshold", type=float, default=None,
+                   help="Fixed decision threshold (default: tune on validation)")
     p.add_argument("--out-json", type=str, default=None, help="Write results to JSON file")
     args = p.parse_args()
 
@@ -137,6 +202,7 @@ def main():
         args.checkpoint, args.data_dir, split=args.split,
         batch_size=args.batch_size, num_workers=args.num_workers,
         n_boot=args.n_boot, ela_quality=args.ela_quality,
+        tta=args.tta, threshold=args.threshold,
     )
 
     if args.out_json:
