@@ -97,27 +97,36 @@ def _dataset(data_dir, split, cfg, input_mode):
 
 
 def _cams_and_masks(model, arch, dataset, image_paths, mask_index):
-    """CAMs paired with their masks, skipping empty and unreadable masks."""
+    """CAMs paired with their masks; unreadable or empty inputs are counted, not scored."""
     gradcam = GradCAM(model, get_gradcam_target_layer(model, arch))
     index_of = {path: i for i, (path, _) in enumerate(dataset.samples)}
-    cams, gts, n_empty, n_unreadable = [], [], 0, 0
+    cams, gts = [], []
+    skips = {"empty": 0, "unreadable_masks": 0, "unreadable_images": 0}
     for path in image_paths:
         mask = _load_mask(mask_index[_stem(path)])
         if mask is None:
-            n_unreadable += 1
+            skips["unreadable_masks"] += 1
             continue
         if not mask.any():
-            n_empty += 1
+            skips["empty"] += 1
             continue
-        tensor, _ = dataset[index_of[path]]
+        try:
+            tensor, _ = dataset[index_of[path]]
+        except OSError:
+            skips["unreadable_images"] += 1
+            continue
         cams.append(gradcam.generate(tensor.unsqueeze(0)))
         gts.append(mask)
-    return cams, gts, n_empty, n_unreadable
+    return cams, gts, skips
 
 
 def analyse(ckpt_path: str, data_dir: str = "data", masks_dir: str = "data/masks",
             split: str = "test", grid=DEFAULT_GRID) -> dict:
     """Measure localization on `split`; nothing is loaded while coverage is still zero."""
+    if split == "val":
+        raise ValueError(
+            "--split val cannot report localization: the CAM threshold is chosen on val "
+            "masks, so no held-out split would remain. Report --split test instead.")
     mask_index = _mask_index(masks_dir)
     tampered = [p for p, label in _split_rows(data_dir, split) if label == 1]
     matched = [p for p in tampered if _stem(p) in mask_index]
@@ -125,10 +134,15 @@ def analyse(ckpt_path: str, data_dir: str = "data", masks_dir: str = "data/masks
         "ckpt": ckpt_path, "masks_dir": masks_dir, "split": split,
         "arch": None, "input_mode": None,
         "n_tampered": len(tampered), "n_matched": len(matched),
-        "coverage": len(matched) / len(tampered) if tampered else 0.0,
-        "val_coverage": None, "threshold": None, "val_mean_iou": None,
-        "mean_iou": None, "mean_dice": None,
-        "n_scored": 0, "n_skipped_empty": 0, "n_skipped_unreadable": 0,
+        "coverage": coverage(tampered, mask_index.values()),
+        "threshold": None, "mean_iou": None, "mean_dice": None,
+        "n_scored": 0,
+        "n_skipped_empty": 0, "n_skipped_unreadable_masks": 0,
+        "n_skipped_unreadable_images": 0,
+        "val_coverage": None, "val_mean_iou": None,
+        "n_val_tampered": 0, "n_val_matched": 0, "n_val_scored": 0,
+        "val_skipped_empty": 0, "val_skipped_unreadable_masks": 0,
+        "val_skipped_unreadable_images": 0,
         "reason": None,
     }
 
@@ -140,10 +154,10 @@ def analyse(ckpt_path: str, data_dir: str = "data", masks_dir: str = "data/masks
                             f"a tampered {split} image")
         return result
 
-    val_tampered = (tampered if split == "val"
-                    else [p for p, label in _split_rows(data_dir, "val") if label == 1])
+    val_tampered = [p for p, label in _split_rows(data_dir, "val") if label == 1]
     val_matched = [p for p in val_tampered if _stem(p) in mask_index]
-    result["val_coverage"] = (len(val_matched) / len(val_tampered) if val_tampered else 0.0)
+    result["n_val_tampered"], result["n_val_matched"] = len(val_tampered), len(val_matched)
+    result["val_coverage"] = coverage(val_tampered, mask_index.values())
     if not val_matched:
         result["reason"] = ("no file under the masks directory has a filename stem "
                             "matching a tampered val image, so the CAM threshold cannot "
@@ -162,20 +176,31 @@ def analyse(ckpt_path: str, data_dir: str = "data", masks_dir: str = "data/masks
     model.eval()
 
     dataset = _dataset(data_dir, split, cfg, input_mode)
-    val_dataset = dataset if split == "val" else _dataset(data_dir, "val", cfg, input_mode)
+    val_dataset = _dataset(data_dir, "val", cfg, input_mode)
 
-    val_cams, val_gts, _, _ = _cams_and_masks(model, arch, val_dataset, val_matched, mask_index)
+    val_cams, val_gts, val_skips = _cams_and_masks(
+        model, arch, val_dataset, val_matched, mask_index)
+    result["n_val_scored"] = len(val_gts)
+    result["val_skipped_empty"] = val_skips["empty"]
+    result["val_skipped_unreadable_masks"] = val_skips["unreadable_masks"]
+    result["val_skipped_unreadable_images"] = val_skips["unreadable_images"]
+
     threshold, val_mean_iou = choose_threshold(val_cams, val_gts, grid)
     if threshold is None:
-        result["reason"] = "none of the matching val masks contains a forgery region"
+        result["reason"] = (
+            "the threshold grid is empty" if np.asarray(grid).size == 0
+            else "no matching val mask contains a forgery region that could be scored, "
+                 "so no threshold could be chosen")
         return result
     result["threshold"], result["val_mean_iou"] = threshold, val_mean_iou
 
-    cams, gts, n_empty, n_unreadable = _cams_and_masks(
-        model, arch, dataset, matched, mask_index)
-    result["n_skipped_empty"], result["n_skipped_unreadable"] = n_empty, n_unreadable
+    cams, gts, skips = _cams_and_masks(model, arch, dataset, matched, mask_index)
+    result["n_skipped_empty"] = skips["empty"]
+    result["n_skipped_unreadable_masks"] = skips["unreadable_masks"]
+    result["n_skipped_unreadable_images"] = skips["unreadable_images"]
     if not gts:
-        result["reason"] = f"every matching {split} mask is empty or unreadable"
+        result["reason"] = (f"no scorable {split} image remains: every matching mask is "
+                            "empty or unreadable, or its image cannot be opened")
         return result
 
     scores = [iou_dice(cam_to_mask(_resize_cam(cam, gt.shape), threshold), gt)
@@ -184,6 +209,25 @@ def analyse(ckpt_path: str, data_dir: str = "data", masks_dir: str = "data/masks
     result["mean_iou"] = float(np.mean([s[0] for s in scores]))
     result["mean_dice"] = float(np.mean([s[1] for s in scores]))
     return result
+
+
+def _val_calibration_lines(result: dict) -> list[str]:
+    """Val diagnostics, so a reader can tell whether calibration was possible."""
+    lines = [
+        "## Validation calibration",
+        "",
+        f"Coverage: {result['n_val_matched']} of {result['n_val_tampered']} tampered val "
+        f"images had a matching mask ({100 * result['val_coverage']:.1f}%).",
+        f"Images scored: {result['n_val_scored']}. Skipped: "
+        f"{result['val_skipped_empty']} masks with no forgery pixels, "
+        f"{result['val_skipped_unreadable_masks']} unreadable masks, "
+        f"{result['val_skipped_unreadable_images']} unreadable images.",
+    ]
+    if result["threshold"] is not None:
+        lines.append(f"Threshold chosen: {result['threshold']:.2f} "
+                     f"(mean val IoU {result['val_mean_iou']:.4f}).")
+    lines.append("")
+    return lines
 
 
 def render_markdown(result: dict) -> str:
@@ -214,6 +258,8 @@ def render_markdown(result: dict) -> str:
             "would not describe this model.",
             "",
         ]
+        if result["val_coverage"] is not None:
+            lines += _val_calibration_lines(result)
         return "\n".join(lines)
 
     lines += [
@@ -231,9 +277,11 @@ def render_markdown(result: dict) -> str:
         "",
         f"Skipped: {result['n_tampered'] - result['n_matched']} tampered images without a "
         f"mask, {result['n_skipped_empty']} masks with no forgery pixels, "
-        f"{result['n_skipped_unreadable']} unreadable masks.",
+        f"{result['n_skipped_unreadable_masks']} unreadable masks, "
+        f"{result['n_skipped_unreadable_images']} unreadable images.",
         "",
     ]
+    lines += _val_calibration_lines(result)
     return "\n".join(lines)
 
 
@@ -244,7 +292,9 @@ def main():
     p.add_argument("--data-dir", default="data")
     p.add_argument("--masks-dir", default="data/masks",
                    help="Folder of ground-truth forgery masks (searched recursively)")
-    p.add_argument("--split", default="test")
+    p.add_argument("--split", default="test",
+                   help="Reported split; only test is supported because the threshold "
+                        "is fitted on val")
     p.add_argument("--out", default="docs/results/localization.md")
     args = p.parse_args()
 
@@ -255,6 +305,9 @@ def main():
 
     print(f"tampered={result['n_tampered']}  matched={result['n_matched']}  "
           f"coverage={result['coverage']:.3f}  scored={result['n_scored']}")
+    if result["val_coverage"] is not None:
+        print(f"val_coverage={result['val_coverage']:.3f}  "
+              f"val_scored={result['n_val_scored']}")
     if result["reason"]:
         print(f"Localization could not be measured: {result['reason']}")
     else:
