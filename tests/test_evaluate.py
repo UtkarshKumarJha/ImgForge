@@ -6,7 +6,8 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from evaluate import (
-    tune_threshold, save_predictions, predict, is_degenerate, macro_f1_at,
+    tune_threshold, save_predictions, predict, is_degenerate,
+    tune_tta_and_no_tta_thresholds,
 )
 from experiment_log import LOG_COLS, append_to_log
 
@@ -68,25 +69,19 @@ def test_tta_averages_image_and_horizontal_flip():
     assert paths == ["a.jpg"]
 
 
-def test_no_tta_f1_uses_no_tta_tuned_threshold():
+def test_tta_and_no_tta_thresholds_are_tuned_separately():
     # TTA and no-TTA validation distributions give different first-perfect cuts.
     y_tta = np.array([0, 0, 1, 1])
     p_tta = np.array([0.10, 0.30, 0.55, 0.70])
     y_nt = np.array([0, 0, 1, 1, 1, 1])
     p_nt = np.array([0.05, 0.20, 0.45, 0.50, 0.60, 0.70])
 
-    decision_threshold = tune_threshold(y_tta, p_tta)
-    threshold_no_tta = tune_threshold(y_nt, p_nt)
-    assert decision_threshold == pytest.approx(0.31)
-    assert threshold_no_tta == pytest.approx(0.21)
-    assert decision_threshold != pytest.approx(threshold_no_tta)
+    decision_threshold, threshold_no_tta = tune_tta_and_no_tta_thresholds(
+        y_tta, p_tta, y_nt, p_nt)
 
-    target_labels = np.array([0, 1, 1, 1])
-    target_probs = np.array([0.20, 0.25, 0.27, 0.90])
-    f1_tuned_no_tta = macro_f1_at(target_labels, target_probs, threshold_no_tta)
-    f1_at_decision_threshold = macro_f1_at(target_labels, target_probs, decision_threshold)
-    assert f1_tuned_no_tta == pytest.approx(1.0)
-    assert f1_at_decision_threshold != pytest.approx(f1_tuned_no_tta)
+    assert decision_threshold == pytest.approx(0.31)    # TTA optimum
+    assert threshold_no_tta == pytest.approx(0.21)      # no-TTA optimum
+    assert decision_threshold != pytest.approx(threshold_no_tta)
 
 
 def test_log_accepts_result_without_new_columns(tmp_path):

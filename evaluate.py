@@ -97,6 +97,12 @@ def macro_f1_at(y_true, y_prob, threshold: float) -> float:
                           average="macro", zero_division=0))
 
 
+def tune_tta_and_no_tta_thresholds(tta_true, tta_prob, no_tta_true, no_tta_prob):
+    """Return (decision_threshold, threshold_no_tta), each tuned on its own distribution."""
+    return (tune_threshold(tta_true, tta_prob),
+            tune_threshold(no_tta_true, no_tta_prob))
+
+
 def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
              batch_size: int = 16, num_workers: int = 0, n_boot: int = 2000,
              ela_quality: int = 75, tta: bool = False,
@@ -130,20 +136,30 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
     tuned = threshold is None
     if tuned or tta:
         val_loader = target_loader if split == "val" else loader_for("val")
-    if tuned:
-        val_true, val_prob, _ = predict(model, val_loader, device, tta=tta)
-        threshold = tune_threshold(val_true, val_prob)
 
-    # Each variant is judged by a threshold tuned on its own validation probabilities.
     if tta:
         _, y_prob_no_tta, _ = predict(model, target_loader, device, tta=False)
         if split == "val":
-            threshold_no_tta = tune_threshold(y_true, y_prob_no_tta)
+            nt_true, nt_prob = y_true, y_prob_no_tta
         else:
             nt_true, nt_prob, _ = predict(model, val_loader, device, tta=False)
-            threshold_no_tta = tune_threshold(nt_true, nt_prob)
     else:
         y_prob_no_tta = y_prob
+
+    # Each variant is judged by a threshold tuned on its own validation probabilities.
+    if tuned:
+        if split == "val":
+            val_true, val_prob = y_true, y_prob
+        else:
+            val_true, val_prob, _ = predict(model, val_loader, device, tta=tta)
+        if tta:
+            threshold, threshold_no_tta = tune_tta_and_no_tta_thresholds(
+                val_true, val_prob, nt_true, nt_prob)
+        else:
+            threshold = threshold_no_tta = tune_threshold(val_true, val_prob)
+    elif tta:
+        threshold_no_tta = tune_threshold(nt_true, nt_prob)
+    else:
         threshold_no_tta = threshold
 
     y_pred = (y_prob >= threshold).astype(int)
