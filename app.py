@@ -1,7 +1,5 @@
 import streamlit as st
 import torch
-import torch.nn as nn
-from torchvision import models
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -11,6 +9,7 @@ import os
 
 from data.ela import compute_ela
 from gradcam import GradCAM, overlay_heatmap, parse_tamper_zone, get_gradcam_target_layer
+from model_factory import build_from_checkpoint
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CHECKPOINT  = "models/best_model.pth"
@@ -84,28 +83,8 @@ st.markdown("""
 
 @st.cache_resource
 def load_model():
-    def build():
-        m = models.efficientnet_b0(weights=None)
-        old_conv = m.features[0][0]
-        new_conv = nn.Conv2d(
-            in_channels=4,
-            out_channels=old_conv.out_channels,
-            kernel_size=old_conv.kernel_size,
-            stride=old_conv.stride,
-            padding=old_conv.padding,
-            bias=False
-        )
-        m.features[0][0] = new_conv
-        in_features = m.classifier[1].in_features
-        m.classifier = nn.Sequential(
-            nn.Dropout(p=0.3),
-            nn.Linear(in_features, 2)
-        )
-        return m
-
-    model = build()
     ckpt = torch.load(CHECKPOINT, map_location=DEVICE, weights_only=False)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model = build_from_checkpoint(ckpt)
     model.to(DEVICE)
     model.eval()
     return model, ckpt["val_f1"], ckpt["epoch"]

@@ -6,7 +6,7 @@ import torch.nn as nn
 from PIL import Image
 
 from data.ela import compute_ela
-from model_factory import build_model
+from model_factory import build_from_checkpoint
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
@@ -19,7 +19,7 @@ def load_model(checkpoint_path: str, device: str) -> nn.Module:
     arch = cfg.get("arch", "efficientnet_b0")
     input_mode = cfg.get("input_mode", "rgb_ela")
 
-    model = build_model(arch, input_mode)
+    model = build_from_checkpoint(ckpt)
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device)
     model.eval()

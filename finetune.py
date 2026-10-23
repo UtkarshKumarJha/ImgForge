@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from torchvision import models
 from PIL import Image
 import numpy as np
 import os
@@ -10,6 +9,7 @@ from tqdm import tqdm
 from sklearn.metrics import f1_score
 
 from data.ela import compute_ela
+from model_factory import build_from_checkpoint
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
@@ -82,28 +82,9 @@ class IDDocDataset(Dataset):
         return torch.cat([rgb_t, ela_t], dim=0), torch.tensor(label, dtype=torch.long)
 
 
-# ── Model ─────────────────────────────────────────────────────────────────────
-def build_model():
-    model = models.efficientnet_b0(weights=None)
-    old_conv = model.features[0][0]
-    new_conv = nn.Conv2d(
-        4, old_conv.out_channels,
-        old_conv.kernel_size, old_conv.stride,
-        old_conv.padding, bias=False
-    )
-    model.features[0][0] = new_conv
-    in_features = model.classifier[1].in_features
-    model.classifier = nn.Sequential(
-        nn.Dropout(p=0.3),
-        nn.Linear(in_features, 2)
-    )
-    return model
-
-
 # ── Load pretrained checkpoint ────────────────────────────────────────────────
-model = build_model()
 ckpt = torch.load(CHECKPOINT, map_location=DEVICE, weights_only=False)
-model.load_state_dict(ckpt["model_state_dict"])
+model = build_from_checkpoint(ckpt)
 print(f"Loaded checkpoint — base val F1: {ckpt['val_f1']:.4f}")
 
 # Freeze backbone, only train classifier head for first 10 epochs
