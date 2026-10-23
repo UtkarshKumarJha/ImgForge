@@ -45,3 +45,15 @@ def test_persist_copies_predictions(tmp_path):
     persist_to_drive(str(log), None, str(drive), str(preds))
 
     assert (drive / "predictions" / "run_test.npz").read_bytes() == b"x"
+
+
+def test_persist_defaults_to_predictions_dir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "predictions").mkdir()
+    (tmp_path / "predictions" / "run_test.npz").write_bytes(b"x")
+    log = tmp_path / "experiment_log.csv"
+    log.write_text("arch\n")
+
+    persist_to_drive(str(log), None, str(tmp_path / "drive"))
+
+    assert (tmp_path / "drive" / "predictions" / "run_test.npz").read_bytes() == b"x"
