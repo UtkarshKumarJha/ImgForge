@@ -15,3 +15,5 @@ imagehash
 albumentations
 tqdm
 wandb
+
+pytest
