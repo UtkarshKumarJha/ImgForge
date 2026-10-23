@@ -11,6 +11,7 @@ opencv-python-headless
 matplotlib
 
 scikit-learn
+scipy
 imagehash
 albumentations
 tqdm
