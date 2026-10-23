@@ -15,7 +15,7 @@ def _input_channels(input_mode: str) -> int:
     return {"rgb": 3, "ela": 1, "rgb_ela": 4}[input_mode]
 
 
-def get_transforms(split: str, image_size: int = 224):
+def get_transforms(split: str, image_size: int = 224, input_mode: str = "rgb"):
     """Return (spatial_transform, pixel_transform) pair.
 
     spatial_transform is applied to both RGB and ELA (via additional_targets).
@@ -23,15 +23,19 @@ def get_transforms(split: str, image_size: int = 224):
     would destroy the ELA forensic signal).
     """
     if split == "train":
+        resize = (
+            [A.Resize(288, 288), A.RandomCrop(256, 256)]
+            if image_size == 256
+            else [A.Resize(image_size, image_size)]
+        )
         spatial = A.Compose(
-            [
-                A.Resize(image_size, image_size),
+            resize + [
                 A.Affine(translate_percent=0.05, scale=(0.9, 1.1), rotate=(-10, 10), p=0.4),
                 A.GridDropout(ratio=0.3, p=0.2),
             ],
             additional_targets={"ela": "image"},
         )
-        pixel = A.Compose([
+        pixel = None if input_mode in ("ela", "rgb_ela") else A.Compose([
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
             A.GaussNoise(std_range=(0.02, 0.1), p=0.3),
             A.MotionBlur(blur_limit=5, p=0.2),
@@ -52,7 +56,7 @@ class ForgeryDataset(Dataset):
                  image_size: int = 224, input_mode: str = "rgb_ela",
                  ela_quality: int = 75):
         self.split = split
-        self.spatial_transform, self.pixel_transform = get_transforms(split, image_size)
+        self.spatial_transform, self.pixel_transform = get_transforms(split, image_size, input_mode)
         self.image_size = image_size
         self.input_mode = input_mode
         self.ela_quality = ela_quality
