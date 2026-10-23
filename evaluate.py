@@ -91,6 +91,12 @@ def is_degenerate(pred) -> bool:
     return len(np.unique(pred)) == 1
 
 
+def macro_f1_at(y_true, y_prob, threshold: float) -> float:
+    """Macro F1 after cutting probabilities at `threshold`."""
+    return float(f1_score(y_true, (y_prob >= threshold).astype(int),
+                          average="macro", zero_division=0))
+
+
 def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
              batch_size: int = 16, num_workers: int = 0, n_boot: int = 2000,
              ela_quality: int = 75, tta: bool = False,
@@ -121,17 +127,24 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
     target_loader = loader_for(split)
     y_true, y_prob, paths = predict(model, target_loader, device, tta=tta)
 
-    if threshold is None:
-        if split == "val":
-            threshold = tune_threshold(y_true, y_prob)
-        else:
-            val_true, val_prob, _ = predict(model, loader_for("val"), device, tta=tta)
-            threshold = tune_threshold(val_true, val_prob)
+    tuned = threshold is None
+    if tuned or tta:
+        val_loader = target_loader if split == "val" else loader_for("val")
+    if tuned:
+        val_true, val_prob, _ = predict(model, val_loader, device, tta=tta)
+        threshold = tune_threshold(val_true, val_prob)
 
+    # Each variant is judged by a threshold tuned on its own validation probabilities.
     if tta:
         _, y_prob_no_tta, _ = predict(model, target_loader, device, tta=False)
+        if split == "val":
+            threshold_no_tta = tune_threshold(y_true, y_prob_no_tta)
+        else:
+            nt_true, nt_prob, _ = predict(model, val_loader, device, tta=False)
+            threshold_no_tta = tune_threshold(nt_true, nt_prob)
     else:
         y_prob_no_tta = y_prob
+        threshold_no_tta = threshold
 
     y_pred = (y_prob >= threshold).astype(int)
     pred_path = os.path.join("predictions", f"{run_name}_{split}.npz")
@@ -149,10 +162,8 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
         lo, hi = bootstrap_ci(y_true, y_pred, y_prob, fn, n_boot=n_boot, rng=rng)
         metrics[name] = {"value": round(val, 4), "ci_lo": round(lo, 4), "ci_hi": round(hi, 4)}
 
-    f1_argmax = float(f1_score(y_true, (y_prob >= 0.5).astype(int),
-                               average="macro", zero_division=0))
-    f1_no_tta = float(f1_score(y_true, (y_prob_no_tta >= threshold).astype(int),
-                               average="macro", zero_division=0))
+    f1_argmax = macro_f1_at(y_true, y_prob, 0.5)
+    f1_no_tta = macro_f1_at(y_true, y_prob_no_tta, threshold_no_tta)
     degenerate = is_degenerate(y_pred)
 
     print(f"\n{'Metric':<15} {'Value':>8}  {'95% CI':>18}")
