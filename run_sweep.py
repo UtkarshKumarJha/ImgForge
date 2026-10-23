@@ -72,16 +72,13 @@ def warmup_ela_cache(data_dir: str, ela_quality: int, cache_dir: str):
 
 
 def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | None,
-                     predictions_dir: str = "predictions"):
+                     run_name: str, predictions_dir: str = "predictions"):
     if not persist_dir:
         return
     os.makedirs(persist_dir, exist_ok=True)
 
-    if os.path.exists(log_path):
-        dest = os.path.join(persist_dir, os.path.basename(log_path))
-        shutil.copy2(log_path, dest)
-        print(f"  Persisted {log_path} -> {dest}")
-
+    # Artefacts before the log: the log copy is the completion marker, so nothing
+    # may be persisted after it or a failed copy would be skipped forever on resume.
     if cache_dir and os.path.isdir(cache_dir):
         dest_cache = os.path.join(persist_dir, "ela_cache")
         os.makedirs(dest_cache, exist_ok=True)
@@ -106,6 +103,18 @@ def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | No
                 count += 1
         if count:
             print(f"  Persisted {count} new prediction files")
+        expected = os.path.join(dest_preds, f"{run_name}_test.npz")
+        if not os.path.exists(expected):
+            print(f"  WARNING: no predictions for {run_name} in {predictions_dir} "
+                  f"(missing {run_name}_test.npz) — this run cannot be audited later")
+    else:
+        print(f"  WARNING: predictions dir not found: {predictions_dir} — "
+              f"no prediction artefacts persisted for {run_name}")
+
+    if os.path.exists(log_path):
+        dest = os.path.join(persist_dir, os.path.basename(log_path))
+        shutil.copy2(log_path, dest)
+        print(f"  Persisted {log_path} -> {dest}")
 
 
 def restore_from_drive(log_path: str, cache_dir: str | None, persist_dir: str | None):
@@ -289,7 +298,8 @@ def main():
                     done += 1
                     completed.add((arch, input_mode, seed))
                     persist_to_drive(args.log_path, args.ela_cache_dir,
-                                     args.persist_dir)
+                                     args.persist_dir,
+                                     f"{arch}_{input_mode}_s{seed}")
                 else:
                     failed += 1
 
