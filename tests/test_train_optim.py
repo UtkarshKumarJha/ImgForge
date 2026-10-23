@@ -39,6 +39,42 @@ def test_head_and_lstm_are_in_the_new_group():
     assert id(m.backbone[0].rgb_conv.weight) in backbone_ids
 
 
+def test_pretrained_trunk_parameters_are_never_in_the_new_group():
+    trunks = {
+        "efficientnet_b0": lambda m: [m.features],
+        "swin_tiny": lambda m: [m.features, m.norm],
+        "resnet18_bilstm": lambda m: [m.backbone],
+        "mlp": lambda m: [],
+    }
+    for arch, get_trunks in trunks.items():
+        m = build_model(arch, "rgb_ela")
+        groups = build_param_groups(m, arch, 1e-4, 1e-3)
+        new_ids = {id(p) for g in groups if g["lr"] == 1e-3 for p in g["params"]}
+        for trunk in get_trunks(m):
+            for name, p in trunk.named_parameters():
+                if "aux_conv" in name:
+                    continue  # randomly-initialised ELA branch, new by design
+                assert id(p) not in new_ids, f"{arch}:{name}"
+        if arch == "swin_tiny":
+            assert id(m.norm.weight) not in new_ids
+            assert id(m.norm.bias) not in new_ids
+
+
+def test_backbone_lr_defaults_to_per_arch_value(monkeypatch):
+    from train import parse_args
+    for arch, expected in [("swin_tiny", 2e-5), ("efficientnet_b0", 1e-4),
+                           ("resnet18_bilstm", 1e-4), ("mlp", 1e-4)]:
+        monkeypatch.setattr(sys, "argv", ["train.py", "--arch", arch])
+        assert parse_args().lr_backbone == expected, arch
+
+
+def test_explicit_backbone_lr_overrides_the_default(monkeypatch):
+    from train import parse_args
+    monkeypatch.setattr(sys, "argv",
+                        ["train.py", "--arch", "swin_tiny", "--lr-backbone", "5e-5"])
+    assert parse_args().lr_backbone == 5e-5
+
+
 def test_warmup_ramps_then_cosine_decays():
     p = torch.nn.Parameter(torch.zeros(1))
     opt = torch.optim.AdamW([{"params": [p], "lr": 1e-3}])
