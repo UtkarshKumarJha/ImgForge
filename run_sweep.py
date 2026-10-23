@@ -72,7 +72,7 @@ def warmup_ela_cache(data_dir: str, ela_quality: int, cache_dir: str):
 
 
 def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | None,
-                     predictions_dir: str | None = None):
+                     predictions_dir: str = "predictions"):
     if not persist_dir:
         return
     os.makedirs(persist_dir, exist_ok=True)
@@ -94,7 +94,7 @@ def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | No
         if count:
             print(f"  Persisted {count} new ELA cache files")
 
-    if predictions_dir and os.path.isdir(predictions_dir):
+    if os.path.isdir(predictions_dir):
         dest_preds = os.path.join(
             persist_dir, os.path.basename(os.path.normpath(predictions_dir)))
         os.makedirs(dest_preds, exist_ok=True)
@@ -240,7 +240,6 @@ def main():
     p.add_argument("--fusion", default="dual", choices=["dual", "concat"])
     p.add_argument("--no-tta", action="store_false", dest="tta", default=True,
                    help="Disable test-time augmentation (on by default)")
-    p.add_argument("--predictions-dir", default="predictions")
     p.add_argument("--ela-quality", type=int, default=75)
     p.add_argument("--ela-cache-dir", default="data/ela_cache")
     p.add_argument("--persist-dir", default=None,
@@ -290,7 +289,7 @@ def main():
                     done += 1
                     completed.add((arch, input_mode, seed))
                     persist_to_drive(args.log_path, args.ela_cache_dir,
-                                     args.persist_dir, args.predictions_dir)
+                                     args.persist_dir)
                 else:
                     failed += 1
 
