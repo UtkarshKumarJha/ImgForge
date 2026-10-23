@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import math
 import os
 import random
 from pathlib import Path
@@ -26,6 +27,45 @@ def seed_everything(seed: int):
     torch.backends.cudnn.benchmark = False
 
 
+# Name prefixes of the pretrained trunks. Everything else is randomly initialised.
+BACKBONE_PREFIXES = {
+    "efficientnet_b0": ("features.",),
+    "swin_tiny": ("features.",),
+    "resnet18_bilstm": ("backbone.",),
+    "mlp": (),  # no pretrained trunk
+}
+
+
+def build_param_groups(model: nn.Module, arch: str, lr_backbone: float,
+                       lr_new: float) -> list[dict]:
+    """Two LR groups: pretrained trunk vs randomly-initialised modules."""
+    prefixes = BACKBONE_PREFIXES[arch]
+    backbone, new = [], []
+    for name, param in model.named_parameters():
+        # The dual ELA stem lives under the trunk's prefix but is not pretrained.
+        is_backbone = "aux_conv" not in name and name.startswith(prefixes)
+        (backbone if is_backbone else new).append(param)
+
+    groups = []
+    if backbone:
+        groups.append({"params": backbone, "lr": lr_backbone})
+    groups.append({"params": new, "lr": lr_new})
+    return groups
+
+
+def make_scheduler(optimizer, warmup_epochs: int, total_epochs: int):
+    """Linear warmup then cosine decay to zero, as a single LambdaLR."""
+    warmup = max(1, warmup_epochs)
+
+    def factor(epoch: int) -> float:
+        if epoch < warmup:
+            return (epoch + 1) / warmup
+        progress = min(1.0, (epoch - warmup) / max(1, total_epochs - warmup))
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Train forgery detector")
     p.add_argument("--arch", type=str, default="efficientnet_b0", choices=sorted(VALID_ARCHS))
@@ -35,7 +75,14 @@ def parse_args():
     p.add_argument("--image-size", type=int, default=224)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--num-epochs", type=int, default=50)
-    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--lr-backbone", type=float, default=1e-4,
+                   help="LR for pretrained trunk weights")
+    p.add_argument("--lr-new", type=float, default=1e-3,
+                   help="LR for randomly-initialised modules")
+    p.add_argument("--warmup", type=int, default=5, help="Linear warmup epochs")
+    p.add_argument("--grad-clip", type=float, default=1.0, help="Max grad norm (0 disables)")
+    p.add_argument("--fusion", type=str, default="dual", choices=["dual", "concat"],
+                   help="How the ELA channel joins the RGB input")
     p.add_argument("--weight-decay", type=float, default=1e-2)
     p.add_argument("--patience", type=int, default=10)
     p.add_argument("--num-workers", type=int, default=0)
@@ -79,7 +126,7 @@ def main():
         num_workers=args.num_workers, pin_memory=True,
     )
 
-    model = build_model(args.arch, args.input_mode).to(device)
+    model = build_model(args.arch, args.input_mode, fusion=args.fusion).to(device)
 
     n_auth = sum(1 for _, l in train_ds.samples if l == 0)
     n_tamp = sum(1 for _, l in train_ds.samples if l == 1)
@@ -87,8 +134,13 @@ def main():
     weights = torch.tensor([total / (2 * n_auth), total / (2 * n_tamp)]).to(device)
 
     criterion = nn.CrossEntropyLoss(weight=weights)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_epochs)
+    optimizer = torch.optim.AdamW(
+        build_param_groups(model, args.arch, args.lr_backbone, args.lr_new),
+        weight_decay=args.weight_decay,
+    )
+    scheduler = make_scheduler(optimizer, args.warmup, args.num_epochs)
+    use_amp = device == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     os.makedirs(args.out_dir, exist_ok=True)
     best_ckpt = os.path.join(args.out_dir, f"{run_name}_best.pth")
@@ -102,10 +154,15 @@ def main():
         for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch}/{args.num_epochs} [Train]"):
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()
+            if args.grad_clip > 0:
+                scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
 
             train_loss += loss.item() * inputs.size(0)
             train_preds.extend(outputs.argmax(1).cpu().numpy())
@@ -118,7 +175,7 @@ def main():
         model.eval()
         val_loss, val_preds, val_labels = 0.0, [], []
 
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
             for inputs, labels in tqdm(val_loader, desc=f"Epoch {epoch}/{args.num_epochs} [Val]"):
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs)
@@ -139,6 +196,7 @@ def main():
             "train/loss": train_loss, "train/acc": train_acc, "train/f1": train_f1,
             "val/loss": val_loss, "val/acc": val_acc, "val/f1": val_f1,
             "lr": scheduler.get_last_lr()[0],
+            "lr_new": scheduler.get_last_lr()[-1],
         }
 
         if args.wandb:
