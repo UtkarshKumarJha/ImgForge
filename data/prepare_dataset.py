@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import hashlib
 import re
 import random
 from collections import defaultdict
@@ -24,7 +25,27 @@ HAMMING_THRESHOLD = 6
 
 
 def collect_images(folder, label):
-    return [(str(p), label) for p in Path(folder).rglob("*") if p.suffix.lower() in EXTS]
+    # sorted() so filesystem ordering cannot change the shuffle input
+    return [(str(p), label) for p in sorted(Path(folder).rglob("*")) if p.suffix.lower() in EXTS]
+
+
+def split_fingerprint(csv_dir):
+    """Per-split row counts, class counts and a path hash, for comparing splits."""
+    counts, class_counts, lines = {}, {}, []
+    for split in ("train", "val", "test"):
+        with open(Path(csv_dir) / f"{split}.csv", newline="") as f:
+            rows = list(csv.DictReader(f))
+        counts[split] = len(rows)
+        split_classes = defaultdict(int)
+        for row in rows:
+            split_classes[str(row["label"])] += 1
+        class_counts[split] = dict(split_classes)
+        lines.extend(f"{split}:{row['path']}" for row in sorted(rows, key=lambda r: r["path"]))
+    return {
+        "counts": counts,
+        "class_counts": class_counts,
+        "sha256": hashlib.sha256("\n".join(lines).encode()).hexdigest(),
+    }
 
 
 def compute_phash(path):
