@@ -77,7 +77,39 @@ def test_mask_directory_is_detected(tmp_path, name):
     assert r["mask_available"] is True
 
 
-def test_cli_prints_fingerprint_and_exits_1_on_problems(tmp_path, capsys, monkeypatch):
+def test_existing_raw_dir_without_masks_is_false(tmp_path):
+    d = tmp_path / "data"; d.mkdir()
+    for split in ("train", "val", "test"):
+        _write_split(d, split, 0, 0)
+    raw = tmp_path / "raw"
+    (raw / "CASIA2.0_revised" / "Au").mkdir(parents=True)
+    r = verify_setup(str(d), str(raw), {"train": (0, 0), "val": (0, 0), "test": (0, 0)})
+    assert r["mask_available"] is False
+
+
+def test_missing_split_csv_is_a_problem_not_a_traceback(tmp_path):
+    d = tmp_path / "data"; d.mkdir()
+    _write_split(d, "train", 1, 1)
+    r = verify_setup(str(d), str(tmp_path / "missing_raw"), {"train": (1, 1)})
+    assert r["split_ok"] is False
+    assert any("val.csv missing or unreadable" in p for p in r["problems"])
+    assert r["sha256"] is None
+
+
+def test_unexpected_label_is_a_problem(tmp_path):
+    d = tmp_path / "data"; d.mkdir()
+    (d / "train.csv").write_text("path,label\n/x/0.jpg,0\n/x/1.jpg,0\n/x/2.jpg,2\n")
+    for split in ("val", "test"):
+        _write_split(d, split, 0, 0)
+    r = verify_setup(str(d), str(tmp_path / "missing_raw"),
+                     {"train": (3, 2), "val": (0, 0), "test": (0, 0)})
+    assert r["split_ok"] is False
+    assert len(r["problems"]) == 1
+    assert "train" in r["problems"][0]
+    assert "unexpected labels ['2']" in r["problems"][0]
+
+
+def test_cli_prints_provisional_marker_and_exits_1_on_problems(tmp_path, capsys, monkeypatch):
     d = tmp_path / "data"; d.mkdir()
     _write_split(d, "train", 1, 1)
     for split in ("val", "test"):
@@ -90,8 +122,24 @@ def test_cli_prints_fingerprint_and_exits_1_on_problems(tmp_path, capsys, monkey
     assert out["observed"]["class_counts"]["train"] == {"0": 1}
     assert len(out["observed"]["sha256"]) == 64
     assert out["expected"]["train"] == {"images": 9448, "authentic": 5223}
+    assert out["expected_provisional"] is True
     assert out["mask_available"] is False
-    assert out["problems"]
+    assert all("(provisional)" in p for p in out["problems"])
+
+
+def test_custom_expected_is_echoed_without_provisional_marker(tmp_path):
+    d = tmp_path / "data"; d.mkdir()
+    _write_split(d, "train", 4, 3)
+    _write_split(d, "val", 0, 0)
+    _write_split(d, "test", 0, 0)
+    expected = {"train": (9, 3), "val": (0, 0), "test": (0, 0)}
+    r = verify_setup(str(d), str(tmp_path / "missing_raw"), expected)
+    assert r["expected"] == expected
+    assert r["expected_provisional"] is False
+    assert "provisional" not in r["problems"][0]
+    assert r["counts"] == {"train": 4, "val": 0, "test": 0}
+    assert r["class_counts"]["train"] == {"0": 3, "1": 1}
+    assert len(r["sha256"]) == 64
 
 
 def test_cli_exits_0_when_split_and_masks_are_expected(tmp_path, capsys, monkeypatch):

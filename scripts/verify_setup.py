@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from data.prepare_dataset import split_fingerprint
 
 # Provisional: Task 1's sorted collect_images changed the split relative to the design
-# document, so these counts must be confirmed by the first verified Kaggle run.
+# document, so these counts must be confirmed by the first verified Kaggle run. A mismatch
+# means updating this table (or attaching the real data), never re-deriving the split to fit.
 PROVISIONAL_EXPECTED = {
     "train": (9448, 5223),
     "val": (1181, 903),
@@ -29,25 +30,49 @@ def _mask_available(raw_dir) -> bool:
     return False
 
 
+def _read_fingerprint(data_dir):
+    """Return (fingerprint, read_problem); a missing CSV becomes a problem, not a traceback."""
+    try:
+        return split_fingerprint(data_dir), None
+    except OSError as e:
+        name = Path(getattr(e, "filename", None) or "").name
+        return {"counts": {}, "class_counts": {}, "sha256": None}, (
+            f"{name or 'split CSVs'} missing or unreadable: {e}")
+
+
 def verify_setup(data_dir, raw_dir, expected=None) -> dict:
     """Compare the observed split fingerprint against expected (total, authentic) per split."""
-    expected = PROVISIONAL_EXPECTED if expected is None else expected
-    fp = split_fingerprint(data_dir)
+    provisional = expected is None
+    expected = PROVISIONAL_EXPECTED if provisional else expected
+    mark = " (provisional)" if provisional else ""
 
-    problems = []
-    for split, (n_expected, auth_expected) in expected.items():
-        n = fp["counts"].get(split, 0)
-        auth = fp["class_counts"].get(split, {}).get("0", 0)
-        if n != n_expected or auth != auth_expected:
-            problems.append(
-                f"{split}: expected {n_expected} images / {auth_expected} authentic, "
-                f"observed {n} / {auth}")
+    fp, read_problem = _read_fingerprint(data_dir)
+    problems = [read_problem] if read_problem else []
+
+    if not read_problem:
+        for split, (n_expected, auth_expected) in expected.items():
+            n = fp["counts"].get(split, 0)
+            auth = fp["class_counts"].get(split, {}).get("0", 0)
+            if n != n_expected or auth != auth_expected:
+                problems.append(
+                    f"{split}: expected {n_expected} images / {auth_expected} authentic{mark}, "
+                    f"observed {n} / {auth}")
+        for split, classes in fp["class_counts"].items():
+            bad = sorted(set(classes) - {"0", "1"})
+            if bad:
+                problems.append(
+                    f"{split}: unexpected labels {bad}; only 0 (authentic) and "
+                    "1 (tampered) are valid")
 
     return {
         "split_ok": not problems,
         "mask_available": _mask_available(raw_dir),
-        "counts": fp,
+        "counts": fp["counts"],
+        "class_counts": fp["class_counts"],
+        "sha256": fp["sha256"],
         "problems": problems,
+        "expected": expected,
+        "expected_provisional": provisional,
     }
 
 
@@ -60,9 +85,14 @@ def main():
 
     r = verify_setup(args.data_dir, args.raw_dir)
     print(json.dumps({
-        "observed": r["counts"],
+        "observed": {
+            "counts": r["counts"],
+            "class_counts": r["class_counts"],
+            "sha256": r["sha256"],
+        },
         "expected": {s: {"images": n, "authentic": a}
-                     for s, (n, a) in PROVISIONAL_EXPECTED.items()},
+                     for s, (n, a) in r["expected"].items()},
+        "expected_provisional": r["expected_provisional"],
         "split_ok": r["split_ok"],
         "mask_available": r["mask_available"],
         "problems": r["problems"],
