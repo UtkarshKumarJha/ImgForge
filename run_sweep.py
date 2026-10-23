@@ -71,7 +71,8 @@ def warmup_ela_cache(data_dir: str, ela_quality: int, cache_dir: str):
     _disk_report("after warmup")
 
 
-def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | None):
+def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | None,
+                     predictions_dir: str | None = None):
     if not persist_dir:
         return
     os.makedirs(persist_dir, exist_ok=True)
@@ -92,6 +93,19 @@ def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | No
                 count += 1
         if count:
             print(f"  Persisted {count} new ELA cache files")
+
+    if predictions_dir and os.path.isdir(predictions_dir):
+        dest_preds = os.path.join(
+            persist_dir, os.path.basename(os.path.normpath(predictions_dir)))
+        os.makedirs(dest_preds, exist_ok=True)
+        count = 0
+        for npz in Path(predictions_dir).glob("*.npz"):
+            dest = os.path.join(dest_preds, npz.name)
+            if not os.path.exists(dest):
+                shutil.copy2(str(npz), dest)
+                count += 1
+        if count:
+            print(f"  Persisted {count} new prediction files")
 
 
 def restore_from_drive(log_path: str, cache_dir: str | None, persist_dir: str | None):
@@ -118,6 +132,44 @@ def restore_from_drive(log_path: str, cache_dir: str | None, persist_dir: str | 
                 print(f"Restored {restored} ELA cache files from {persisted_cache}")
 
 
+def build_train_cmd(args, arch: str, input_mode: str, seed: int) -> list[str]:
+    cmd = [
+        sys.executable, "train.py",
+        "--arch", arch,
+        "--input-mode", input_mode,
+        "--seed", str(seed),
+        "--data-dir", args.data_dir,
+        "--image-size", str(args.image_size),
+        "--num-epochs", str(args.num_epochs),
+        "--batch-size", str(args.batch_size),
+        "--num-workers", str(args.num_workers),
+        "--ela-quality", str(args.ela_quality),
+        "--lr-new", str(args.lr_new),
+        "--warmup", str(args.warmup),
+        "--grad-clip", str(args.grad_clip),
+        "--fusion", args.fusion,
+        "--out-dir", args.out_dir,
+    ]
+    if args.wandb:
+        cmd.append("--wandb")
+    return cmd
+
+
+def build_eval_cmd(args, ckpt_path: str, json_path: str) -> list[str]:
+    cmd = [
+        sys.executable, "evaluate.py", ckpt_path,
+        "--data-dir", args.data_dir,
+        "--split", "test",
+        "--batch-size", str(args.batch_size),
+        "--num-workers", str(args.num_workers),
+        "--ela-quality", str(args.ela_quality),
+        "--out-json", json_path,
+    ]
+    if args.tta:
+        cmd.append("--tta")
+    return cmd
+
+
 def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
     run_name = f"{arch}_{input_mode}_s{seed}"
     ckpt_path = os.path.join(args.out_dir, f"{run_name}_best.pth")
@@ -131,20 +183,7 @@ def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
         print("SKIPPED: not enough disk space to save checkpoint")
         return False
 
-    train_cmd = [
-        sys.executable, "train.py",
-        "--arch", arch,
-        "--input-mode", input_mode,
-        "--seed", str(seed),
-        "--data-dir", args.data_dir,
-        "--num-epochs", str(args.num_epochs),
-        "--batch-size", str(args.batch_size),
-        "--num-workers", str(args.num_workers),
-        "--ela-quality", str(args.ela_quality),
-        "--out-dir", args.out_dir,
-    ]
-    if args.wandb:
-        train_cmd.append("--wandb")
+    train_cmd = build_train_cmd(args, arch, input_mode, seed)
 
     ret = subprocess.run(train_cmd)
     if ret.returncode != 0:
@@ -159,15 +198,7 @@ def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
         print(f"FAILED: checkpoint not found at {ckpt_path}")
         return False
 
-    eval_cmd = [
-        sys.executable, "evaluate.py", ckpt_path,
-        "--data-dir", args.data_dir,
-        "--split", "test",
-        "--batch-size", str(args.batch_size),
-        "--num-workers", str(args.num_workers),
-        "--ela-quality", str(args.ela_quality),
-        "--out-json", json_path,
-    ]
+    eval_cmd = build_eval_cmd(args, ckpt_path, json_path)
 
     print(f"\nEVALUATE: {run_name}")
     ret = subprocess.run(eval_cmd)
@@ -199,9 +230,17 @@ def main():
     p.add_argument("--out-dir", default="models")
     p.add_argument("--results-dir", default="results")
     p.add_argument("--log-path", default="results/experiment_log.csv")
-    p.add_argument("--num-epochs", type=int, default=50)
+    p.add_argument("--num-epochs", type=int, default=60)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--num-workers", type=int, default=2)
+    p.add_argument("--image-size", type=int, default=256)
+    p.add_argument("--lr-new", type=float, default=1e-3)
+    p.add_argument("--warmup", type=int, default=5)
+    p.add_argument("--grad-clip", type=float, default=1.0)
+    p.add_argument("--fusion", default="dual", choices=["dual", "concat"])
+    p.add_argument("--no-tta", action="store_false", dest="tta", default=True,
+                   help="Disable test-time augmentation (on by default)")
+    p.add_argument("--predictions-dir", default="predictions")
     p.add_argument("--ela-quality", type=int, default=75)
     p.add_argument("--ela-cache-dir", default="data/ela_cache")
     p.add_argument("--persist-dir", default=None,
@@ -221,6 +260,10 @@ def main():
 
     if args.ela_cache_dir:
         os.environ["IMGFORGE_ELA_CACHE"] = args.ela_cache_dir
+
+    if not args.persist_dir:
+        print("WARNING: --persist-dir is unset — results and predictions will NOT "
+              "survive this session!")
 
     restore_from_drive(args.log_path, args.ela_cache_dir, args.persist_dir)
 
@@ -246,7 +289,8 @@ def main():
                 if ok:
                     done += 1
                     completed.add((arch, input_mode, seed))
-                    persist_to_drive(args.log_path, args.ela_cache_dir, args.persist_dir)
+                    persist_to_drive(args.log_path, args.ela_cache_dir,
+                                     args.persist_dir, args.predictions_dir)
                 else:
                     failed += 1
 
