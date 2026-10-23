@@ -29,6 +29,7 @@ Do this before anything else — these bugs get baked into all 4 architectures o
 - [x] Dry-run verified: 2 combos trained+evaluated+logged, resume correctly skipped them and ran only new combos
 - [ ] 4 architectures × 3 input modes × 3 seeds = 36 runs (to execute on Colab/Kaggle)
 - [ ] Confound check: compare JPEG-QF and ELA-intensity distributions, Authentic vs. Tampered; flag if ELA-only performance is suspiciously strong
+- Metric-improvement branch (23 Oct 2026): dual-stem ELA fusion, mode-aware augmentation, discriminative learning rates + warmup + AMP, val-tuned threshold with TTA and per-sample artefacts, confound/McNemar/localization tooling and the S0 verification gate are implemented; the 36 runs remain pending
 
 ## Phase 4 — Stats + localization
 - [ ] McNemar's test, pairwise, Holm-corrected, across the best run per architecture
