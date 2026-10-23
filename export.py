@@ -1,36 +1,15 @@
 import torch
-import torch.nn as nn
-from torchvision import models
 import os
+
+from model_factory import build_from_checkpoint
 
 CHECKPOINT = "models/best_model.pth"
 DEVICE = "cpu"
 
-def build_model():
-    model = models.efficientnet_b0(weights=None)
-    old_conv = model.features[0][0]
-    new_conv = nn.Conv2d(
-        in_channels=4,
-        out_channels=old_conv.out_channels,
-        kernel_size=old_conv.kernel_size,
-        stride=old_conv.stride,
-        padding=old_conv.padding,
-        bias=False
-    )
-    model.features[0][0] = new_conv
-    in_features = model.classifier[1].in_features
-    model.classifier = nn.Sequential(
-        nn.Dropout(p=0.3),
-        nn.Linear(in_features, 2)
-    )
-    return model
-
-
 def export_to_onnx():
     print("Loading checkpoint...")
-    model = build_model()
     ckpt = torch.load(CHECKPOINT, map_location=DEVICE, weights_only=False)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model = build_from_checkpoint(ckpt)
     model.eval()
     print(f"Loaded model — val F1: {ckpt['val_f1']:.4f}")
 

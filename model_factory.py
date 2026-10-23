@@ -31,17 +31,39 @@ def _adapt_conv(old_conv: nn.Conv2d, in_channels: int) -> nn.Conv2d:
                 old_conv.weight.mean(dim=1, keepdim=True).expand(-1, extra, -1, -1)
             )
         else:
-            new_conv.weight[:] = old_conv.weight[:, :in_channels]
+            new_conv.weight[:] = (
+                old_conv.weight.mean(dim=1, keepdim=True).expand(-1, in_channels, -1, -1)
+            )
         if old_conv.bias is not None:
             new_conv.bias.copy_(old_conv.bias)
     return new_conv
 
 
+class DualStem(nn.Module):
+    """Pretrained RGB conv + separate 1-channel ELA conv, summed."""
+
+    def __init__(self, rgb_conv: nn.Conv2d, aux_conv: nn.Conv2d):
+        super().__init__()
+        self.rgb_conv = rgb_conv
+        self.aux_conv = aux_conv
+
+    def forward(self, x):
+        return self.rgb_conv(x[:, :3]) + self.aux_conv(x[:, 3:])
+
+
+def _adapt_stem(conv: nn.Conv2d, in_channels: int, fusion: str) -> nn.Module:
+    """Keep the pretrained 3-channel conv intact when fusing ELA in a dual stem."""
+    if in_channels == 4 and fusion == "dual":
+        return DualStem(conv, _adapt_conv(conv, 1))
+    return _adapt_conv(conv, in_channels)
+
+
 # ── EfficientNet-B0 ─────────────────────────────────────────────────────────
 
-def _build_efficientnet_b0(in_channels: int, num_classes: int = 2) -> nn.Module:
+def _build_efficientnet_b0(in_channels: int, num_classes: int = 2,
+                           fusion: str = "dual") -> nn.Module:
     model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
-    model.features[0][0] = _adapt_conv(model.features[0][0], in_channels)
+    model.features[0][0] = _adapt_stem(model.features[0][0], in_channels, fusion)
     in_features = model.classifier[1].in_features
     model.classifier = nn.Sequential(
         nn.Dropout(p=0.3),
@@ -76,8 +98,9 @@ class _MLP(nn.Module):
         return self.fc(x)
 
 
-def _build_mlp(in_channels: int, num_classes: int = 2) -> nn.Module:
-    return _MLP(in_channels, num_classes)
+def _build_mlp(in_channels: int, num_classes: int = 2,
+               fusion: str = "dual") -> nn.Module:
+    return _MLP(in_channels, num_classes)  # no conv stem, so fusion is inert
 
 
 # ── ResNet-18 + BiLSTM ───────────────────────────────────────────────────────
@@ -108,9 +131,10 @@ class _ResNet18BiLSTM(nn.Module):
         return self.classifier(pooled)
 
 
-def _build_resnet18_bilstm(in_channels: int, num_classes: int = 2) -> nn.Module:
+def _build_resnet18_bilstm(in_channels: int, num_classes: int = 2,
+                           fusion: str = "dual") -> nn.Module:
     resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-    resnet.conv1 = _adapt_conv(resnet.conv1, in_channels)
+    resnet.conv1 = _adapt_stem(resnet.conv1, in_channels, fusion)
     # Strip avgpool + fc to get the conv backbone only
     backbone = nn.Sequential(
         resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool,
@@ -121,10 +145,11 @@ def _build_resnet18_bilstm(in_channels: int, num_classes: int = 2) -> nn.Module:
 
 # ── Swin-Tiny ────────────────────────────────────────────────────────────────
 
-def _build_swin_tiny(in_channels: int, num_classes: int = 2) -> nn.Module:
+def _build_swin_tiny(in_channels: int, num_classes: int = 2,
+                     fusion: str = "dual") -> nn.Module:
     model = models.swin_t(weights=models.Swin_T_Weights.DEFAULT)
     # Patch embedding is features[0][0]: Conv2d(3, 96, 4×4, stride=4)
-    model.features[0][0] = _adapt_conv(model.features[0][0], in_channels)
+    model.features[0][0] = _adapt_stem(model.features[0][0], in_channels, fusion)
     in_features = model.head.in_features
     model.head = nn.Linear(in_features, num_classes)
     return model
@@ -140,11 +165,27 @@ _BUILDERS = {
 }
 
 
-def build_model(arch: str, input_mode: str, num_classes: int = 2) -> nn.Module:
+def build_model(arch: str, input_mode: str, num_classes: int = 2,
+                fusion: str = "dual") -> nn.Module:
     if arch not in VALID_ARCHS:
         raise ValueError(f"Unknown arch {arch!r}; choose from {VALID_ARCHS}")
     if input_mode not in VALID_MODES:
         raise ValueError(f"Unknown input_mode {input_mode!r}; choose from {VALID_MODES}")
+    if fusion not in {"dual", "concat"}:
+        raise ValueError(f"Unknown fusion {fusion!r}; choose from {{'dual', 'concat'}}")
 
     in_ch = _input_channels(input_mode)
-    return _BUILDERS[arch](in_ch, num_classes)
+    return _BUILDERS[arch](in_ch, num_classes, fusion)
+
+
+def build_from_checkpoint(ckpt) -> nn.Module:
+    """Rebuild the model layout a checkpoint was trained with.
+
+    Defaults to "concat": checkpoints predate the dual stem and have no fusion key.
+    """
+    cfg = ckpt.get("cfg", {})
+    return build_model(
+        cfg.get("arch", "efficientnet_b0"),
+        cfg.get("input_mode", "rgb_ela"),
+        fusion=cfg.get("fusion", "concat"),
+    )
