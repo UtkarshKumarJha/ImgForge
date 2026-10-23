@@ -14,6 +14,9 @@ LOG_COLS = [
     "f1_macro", "f1_macro_ci",
     "roc_auc", "roc_auc_ci",
     "pr_auc", "pr_auc_ci",
+    "decision_threshold",
+    "f1_macro_argmax", "f1_macro_tuned", "f1_macro_tuned_no_tta",
+    "degenerate",
     "checkpoint",
 ]
 
@@ -38,6 +41,10 @@ def append_to_log(result: dict, log_path: str = DEFAULT_LOG):
         m = result["metrics"].get(metric_name, {})
         row[metric_name] = m.get("value", "")
         row[f"{metric_name}_ci"] = f"[{m.get('ci_lo', '')}, {m.get('ci_hi', '')}]"
+
+    for name in ["decision_threshold", "f1_macro_argmax", "f1_macro_tuned",
+                 "f1_macro_tuned_no_tta", "degenerate"]:
+        row[name] = result.get(name, "")
 
     with open(log_path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=LOG_COLS)
