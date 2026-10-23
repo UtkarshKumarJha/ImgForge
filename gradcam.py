@@ -4,7 +4,6 @@ import torch.nn as nn
 import numpy as np
 import cv2
 from PIL import Image
-import matplotlib.cm as cm
 
 class GradCAM:
     def __init__(self, model: nn.Module, target_layer: nn.Module):
@@ -61,6 +60,8 @@ def overlay_heatmap(original_image: np.ndarray, cam: np.ndarray, alpha: float = 
     Returns:
         overlay: (H, W, 3) uint8 RGB image
     """
+    import matplotlib.cm as cm  # only the colour overlay needs matplotlib
+
     h, w = original_image.shape[:2]
 
     # Resize CAM to image size
@@ -102,6 +103,35 @@ def parse_tamper_zone(cam: np.ndarray, threshold: float = 0.5) -> dict:
     }
 
 
-def get_gradcam_target_layer(model: nn.Module) -> nn.Module:
-    """Returns the last conv block of EfficientNet-B0 for Grad-CAM."""
-    return model.features[-1]
+def _infer_arch(model: nn.Module) -> str:
+    """Recover the arch for legacy one-argument callers (app.py, api/main.py)."""
+    from torchvision import models as tvm
+    if isinstance(model, tvm.EfficientNet):
+        return "efficientnet_b0"
+    if isinstance(model, tvm.SwinTransformer):
+        return "swin_tiny"
+    return "resnet18_bilstm" if hasattr(model, "backbone") else "mlp"
+
+
+def get_gradcam_target_layer(model: nn.Module, arch: str | None = None) -> nn.Module:
+    """Return the last block that keeps a (B, C, H, W) conv feature map.
+
+    Grad-CAM reduces gradients over dims (2, 3) as if the output were (B, C, H, W).
+    Swin's blocks are channels-last (B, H, W, C) and the MLP has no conv trunk, so
+    neither can produce a meaningful heatmap; both raise instead of returning a layer
+    that would silently yield a meaningless map.
+    """
+    arch = arch or _infer_arch(model)
+    if arch == "efficientnet_b0":
+        return model.features[-1]
+    if arch == "resnet18_bilstm":
+        return model.backbone[-1][-1]
+    if arch == "swin_tiny":
+        raise ValueError(
+            "Grad-CAM is not supported for arch 'swin_tiny': its blocks are channels-last "
+            "(B, H, W, C), so a (B, C, H, W) Grad-CAM would be meaningless")
+    if arch == "mlp":
+        raise ValueError(
+            "Grad-CAM is not supported for arch 'mlp': the model has no convolutional "
+            "trunk to visualise")
+    raise ValueError(f"Unknown arch {arch!r}")
