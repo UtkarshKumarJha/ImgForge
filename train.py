@@ -30,7 +30,7 @@ def seed_everything(seed: int):
 # Name prefixes of the pretrained trunks. Everything else is randomly initialised.
 BACKBONE_PREFIXES = {
     "efficientnet_b0": ("features.",),
-    "swin_tiny": ("features.",),
+    "swin_tiny": ("features.", "norm."),  # Swin ends in a top-level LayerNorm
     "resnet18_bilstm": ("backbone.",),
     "mlp": (),  # no pretrained trunk
 }
@@ -75,8 +75,8 @@ def parse_args():
     p.add_argument("--image-size", type=int, default=224)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--num-epochs", type=int, default=50)
-    p.add_argument("--lr-backbone", type=float, default=1e-4,
-                   help="LR for pretrained trunk weights")
+    p.add_argument("--lr-backbone", type=float, default=None,
+                   help="LR for pretrained trunk weights (default: 2e-5 for swin_tiny, else 1e-4)")
     p.add_argument("--lr-new", type=float, default=1e-3,
                    help="LR for randomly-initialised modules")
     p.add_argument("--warmup", type=int, default=5, help="Linear warmup epochs")
@@ -89,7 +89,10 @@ def parse_args():
     p.add_argument("--ela-quality", type=int, default=75)
     p.add_argument("--wandb", action="store_true", help="Enable W&B logging")
     p.add_argument("--out-dir", type=str, default="models")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.lr_backbone is None:
+        args.lr_backbone = 2e-5 if args.arch == "swin_tiny" else 1e-4
+    return args
 
 
 def main():
