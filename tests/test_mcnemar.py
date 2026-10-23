@@ -1,9 +1,9 @@
-import csv
 import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from analysis.mcnemar import (
     align_runs,
@@ -40,8 +40,7 @@ def test_holm_is_monotone_and_bounded():
 
 
 def test_within_arch_pairs_yields_twelve():
-    runs = [f"{a}_{m}_s1" for a in ["efficientnet_b0", "mlp", "resnet18_bilstm", "swin_tiny"]
-            for m in ["ela", "rgb", "rgb_ela"]]
+    runs = [f"{a}_{m}_s1" for a in ARCHS for m in MODES]
     assert len(within_arch_pairs(runs)) == 12
 
 
@@ -85,6 +84,16 @@ def test_cross_arch_pairs_yields_six():
     assert len(cross_arch_pairs(best)) == 6
 
 
+def test_within_arch_pairs_rejects_duplicate_cells():
+    runs = [f"{a}_{m}_s{s}" for a in ARCHS for m in MODES for s in (1, 2)]
+    try:
+        within_arch_pairs(runs)
+    except ValueError as e:
+        assert "duplicate" in str(e).lower()
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_alignment_is_by_path_not_row_order():
     a = {"paths": ["x", "y"], "labels": np.array([0, 1]), "preds": np.array([0, 1])}
     b = {"paths": ["y", "x"], "labels": np.array([1, 0]), "preds": np.array([0, 0])}
@@ -93,36 +102,94 @@ def test_alignment_is_by_path_not_row_order():
     assert mcnemar_pair(al["y_true"], al["pred_a"], al["pred_b"])[:2] == (1, 0)
 
 
-def test_best_runs_use_validation_f1_not_test_f1(tmp_path):
-    log = tmp_path / "log.csv"
-    with open(log, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["arch", "input_mode", "seed", "split", "f1_macro"])
-        w.writerow(["mlp", "rgb", 1, "val", 0.90])
-        w.writerow(["mlp", "rgb", 2, "val", 0.95])
-        w.writerow(["mlp", "rgb", 3, "val", 0.80])
-        w.writerow(["mlp", "rgb", 1, "test", 0.99])
-        w.writerow(["mlp", "rgb", 2, "test", 0.10])
-        # equal F1, higher seed listed first: the lower seed must still win
-        w.writerow(["mlp", "ela", 2, "val", 0.80])
-        w.writerow(["mlp", "ela", 1, "val", 0.80])
+# --- checkpoint selection -------------------------------------------------
 
-    by_mode, by_arch = select_best_runs(str(log))
+def _write_checkpoints(models_dir, values=None):
+    """One tiny checkpoint per sweep run, named like train.py writes them."""
+    models_dir.mkdir(exist_ok=True)
+    values = values or {}
+    for arch in ARCHS:
+        for mode in MODES:
+            for seed in (1, 2, 3):
+                run = f"{arch}_{mode}_s{seed}"
+                torch.save({"val_f1": values.get(run, 0.80)},
+                           models_dir / f"{run}_best.pth")
+
+
+def test_best_runs_use_checkpoint_val_f1(tmp_path):
+    models = tmp_path / "models"
+    _write_checkpoints(models, {
+        "mlp_rgb_s1": 0.90, "mlp_rgb_s2": 0.95, "mlp_rgb_s3": 0.80,
+        # equal F1: the lower seed must win
+        "mlp_ela_s1": 0.80, "mlp_ela_s2": 0.80, "mlp_ela_s3": 0.70,
+    })
+
+    by_mode, by_arch = select_best_runs(str(models))
     assert by_mode[("mlp", "rgb")] == "mlp_rgb_s2"
     assert by_mode[("mlp", "ela")] == "mlp_ela_s1"
     assert by_arch["mlp"] == "mlp_rgb_s2"
 
 
-def _write_full_log(path):
-    """36-run val log plus deliberately misleading test rows."""
-    with open(path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["arch", "input_mode", "seed", "split", "f1_macro"])
-        for arch in ARCHS:
-            for mode in MODES:
-                for seed in (1, 2, 3):
-                    w.writerow([arch, mode, seed, "val", 0.80])
-                    w.writerow([arch, mode, seed, "test", 0.10])
+def test_nan_val_f1_is_never_selected(tmp_path):
+    models = tmp_path / "models"
+    _write_checkpoints(models, {
+        "mlp_rgb_s1": float("nan"), "mlp_rgb_s2": 0.70, "mlp_rgb_s3": 0.60,
+    })
+
+    by_mode, _ = select_best_runs(str(models))
+    assert by_mode[("mlp", "rgb")] == "mlp_rgb_s2"
+
+
+def test_missing_checkpoint_names_run_and_path(tmp_path):
+    models = tmp_path / "models"
+    _write_checkpoints(models)
+    missing = models / "mlp_rgb_s2_best.pth"
+    missing.unlink()
+
+    try:
+        select_best_runs(str(models))
+    except ValueError as e:
+        assert "mlp_rgb_s2" in str(e)
+        assert str(missing) in str(e)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_incomplete_coverage_names_cells_and_archs(tmp_path):
+    models = tmp_path / "models"
+    nan = {f"efficientnet_b0_{m}_s{s}": float("nan")
+           for m in MODES for s in (1, 2, 3)}
+    _write_checkpoints(models, nan)
+
+    try:
+        select_best_runs(str(models))
+    except ValueError as e:
+        msg = str(e)
+        assert "efficientnet_b0/ela" in msg
+        assert "efficientnet_b0/rgb" in msg
+        assert "efficientnet_b0/rgb_ela" in msg
+        assert "missing architectures: efficientnet_b0" in msg
+    else:
+        raise AssertionError("expected ValueError")
+
+
+# --- CLI end to end -------------------------------------------------------
+
+LABELS = [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+WRONG = {
+    "efficientnet_b0": set(),
+    "mlp": {0, 1, 2},
+    "resnet18_bilstm": {0, 1, 2, 3, 4},
+    "swin_tiny": {0, 1, 5, 6},
+}
+
+
+def _arch_probs(arch):
+    probs = []
+    for i, label in enumerate(LABELS):
+        pred = 1 - label if i in WRONG[arch] else label
+        probs.append(0.9 if pred == 1 else 0.1)
+    return probs
 
 
 def _write_npz(path, paths, labels, probs):
@@ -130,29 +197,39 @@ def _write_npz(path, paths, labels, probs):
              probs=np.array(probs))
 
 
+def _family_rows(md, title):
+    section = md.split(title, 1)[1].split("\n## ", 1)[0]
+    rows = []
+    for line in section.splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        rows.append((cells[0].strip("`"), float(cells[4]), float(cells[5])))
+    return rows
+
+
 def test_cli_reports_both_families_and_path_overlap(tmp_path):
-    log = tmp_path / "experiment_log.csv"
-    _write_full_log(log)
+    models = tmp_path / "models"
+    _write_checkpoints(models)
 
-    labels = [0, 1, 0, 1, 0, 1]
-    probs = [0.1, 0.9, 0.1, 0.9, 0.1, 0.9]
-    paths = [f"p{i}" for i in range(6)]
-
+    paths = [f"p{i}" for i in range(len(LABELS))]
     pred_files = []
     for arch in ARCHS:
+        probs = _arch_probs(arch)
         for mode in MODES:
-            run = f"{arch}_{mode}_s1"     # val ties break to the lowest seed
-            p = tmp_path / f"{run}_test.npz"
-            if run == "mlp_ela_s1":
-                _write_npz(p, paths[:-1], labels[:-1], probs[:-1])  # reduced overlap
-            else:
-                _write_npz(p, paths, labels, probs)
-            pred_files.append(str(p))
+            for seed in (1, 2, 3):
+                run = f"{arch}_{mode}_s{seed}"   # val ties break to seed 1
+                p = tmp_path / f"{run}_test.npz"
+                if run == "mlp_ela_s1":
+                    _write_npz(p, paths[:-1], LABELS[:-1], probs[:-1])
+                else:
+                    _write_npz(p, paths, LABELS, probs)
+                pred_files.append(str(p))
 
     out = tmp_path / "mcnemar.md"
     subprocess.run(
         [sys.executable, "-m", "analysis.mcnemar", "--predictions", *pred_files,
-         "--log", str(log), "--out", str(out)],
+         "--models-dir", str(models), "--out", str(out)],
         cwd=Path(__file__).resolve().parents[1], check=True,
         capture_output=True, text=True,
     )
@@ -163,5 +240,16 @@ def test_cli_reports_both_families_and_path_overlap(tmp_path):
     assert sum(line.startswith("| `") for line in md.splitlines()) == 18
     assert "validation" in md and "test split" in md
     assert "Decision threshold: 0.50" in md
+    assert md.count("`b` counts images A") == 2
     assert "Reduced path overlap" in md
-    assert "`mlp_ela_s1 vs mlp_rgb_s1`: 5 of 5 / 6" in md
+    assert "`mlp_ela_s1 vs mlp_rgb_s1`: 9 of 9 / 10" in md
+
+    # Each family's p_holm must come from its own Holm run, not a pooled 18-test one.
+    family_b = _family_rows(md, "Family B:")
+    assert any(p_holm < 1 for _, _, p_holm in family_b)
+    for title, expected in (("Family A:", 12), ("Family B:", 6)):
+        rows = _family_rows(md, title)
+        assert len(rows) == expected
+        adjusted = holm({pair: p for pair, p, _ in rows})
+        for pair, _, p_holm in rows:
+            assert abs(adjusted[pair] - p_holm) < 5e-4
