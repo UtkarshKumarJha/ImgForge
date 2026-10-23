@@ -1,4 +1,5 @@
 import numpy as np
+import albumentations as A
 from data.dataset import get_transforms
 
 
@@ -20,3 +21,20 @@ def test_spatial_transform_accepts_small_images_and_returns_square():
     out = spatial(image=rgb, ela=ela)
     assert out["image"].shape[:2] == (256, 256)
     assert out["ela"].shape[:2] == (256, 256)
+
+
+def test_train_at_256_resizes_to_288_then_crops_to_256():
+    spatial, _ = get_transforms("train", 256)
+    resizes = [t for t in spatial.transforms if isinstance(t, A.Resize)]
+    crops = [t for t in spatial.transforms if isinstance(t, A.RandomCrop)]
+    assert [(t.height, t.width) for t in resizes] == [(288, 288)]
+    assert [(t.height, t.width) for t in crops] == [(256, 256)]
+
+
+def test_random_crop_only_on_the_256_training_path():
+    for spatial in (
+        get_transforms("train", 224)[0],
+        get_transforms("val", 256)[0],
+        get_transforms("test", 256)[0],
+    ):
+        assert not any(isinstance(t, A.RandomCrop) for t in spatial.transforms)
