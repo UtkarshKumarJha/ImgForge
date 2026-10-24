@@ -28,6 +28,16 @@ def append_to_log(result: dict, log_path: str = DEFAULT_LOG):
     os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
     write_header = not os.path.exists(log_path)
 
+    if not write_header:
+        with open(log_path, newline="") as f:
+            existing = next(csv.reader(f), [])
+        if existing != LOG_COLS:
+            # Appending under an older header silently shifts every column, and
+            # this CSV is also the sweep's resume key.
+            raise SystemExit(
+                f"{log_path} has {len(existing)} columns but this version writes "
+                f"{len(LOG_COLS)}. Move it aside (e.g. {log_path}.old) before logging.")
+
     row = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         # The sweep resumes on this name, so it must carry any config deviation.

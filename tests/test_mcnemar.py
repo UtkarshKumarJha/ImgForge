@@ -168,6 +168,19 @@ def test_missing_checkpoint_names_run_and_path(tmp_path):
         raise AssertionError("expected ValueError")
 
 
+def test_a_nan_mode_names_the_unusable_seed_not_just_the_cell(tmp_path):
+    models = tmp_path / "models"
+    _write_checkpoints(models, {f"swin_tiny_rgb_s{s}": float("nan") for s in (1, 2, 3)})
+
+    try:
+        select_best_runs(str(models))
+    except ValueError as e:
+        msg = str(e)
+        assert "no seed has a finite val_f1 for all three input modes: swin_tiny" in msg
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_incomplete_coverage_names_cells_and_archs(tmp_path):
     models = tmp_path / "models"
     nan = {f"efficientnet_b0_{m}_s{s}": float("nan")
