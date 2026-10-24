@@ -8,14 +8,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from data.prepare_dataset import split_fingerprint
 
-# Provisional: Task 1's sorted collect_images changed the split relative to the design
-# document, so these counts must be confirmed by the first verified Kaggle run. A mismatch
-# means updating this table (or attaching the real data), never re-deriving the split to fit.
-PROVISIONAL_EXPECTED = {
-    "train": (9448, 5223),
-    "val": (1181, 903),
-    "test": (1182, 927),
+# Verified on the real CASIA 2.0 dataset: Kaggle S0 run of 2026-10-24 kept 11,803
+# images after removing 811 near-duplicates (sha256 79e78eb2…). A mismatch now means
+# the data or the splitter changed — update this table, never re-derive the split to
+# fit it.
+EXPECTED = {
+    "train": (9442, 5253),
+    "val": (1180, 923),
+    "test": (1181, 878),
 }
+EXPECTED_IS_PROVISIONAL = False
 
 
 def _mask_available(raw_dir) -> bool:
@@ -45,8 +47,8 @@ def _read_fingerprint(data_dir):
 
 def verify_setup(data_dir, raw_dir, expected=None) -> dict:
     """Compare the observed split fingerprint against expected (total, authentic) per split."""
-    provisional = expected is None
-    expected = PROVISIONAL_EXPECTED if provisional else expected
+    provisional = expected is None and EXPECTED_IS_PROVISIONAL
+    expected = EXPECTED if expected is None else expected
     mark = " (provisional)" if provisional else ""
 
     fp, read_problem = _read_fingerprint(data_dir)

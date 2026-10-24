@@ -21,7 +21,7 @@ def test_mismatched_counts_are_reported_as_problems(tmp_path):
 
 def test_expected_counts_pass(tmp_path):
     d = tmp_path / "data"; d.mkdir()
-    spec = {"train": (9448, 5223), "val": (1181, 903), "test": (1182, 927)}
+    spec = {"train": (9442, 5253), "val": (1180, 923), "test": (1181, 878)}
     for split, (n, n_auth) in spec.items():
         with open(d / f"{split}.csv", "w") as f:
             f.write("path,label\n")
@@ -122,7 +122,7 @@ def test_unexpected_label_is_a_problem(tmp_path):
     assert "unexpected labels ['2']" in r["problems"][0]
 
 
-def test_cli_prints_provisional_marker_and_exits_1_on_problems(tmp_path, capsys, monkeypatch):
+def test_cli_uses_the_verified_table_and_exits_1_on_problems(tmp_path, capsys, monkeypatch):
     d = tmp_path / "data"; d.mkdir()
     _write_split(d, "train", 1, 1)
     for split in ("val", "test"):
@@ -134,10 +134,10 @@ def test_cli_prints_provisional_marker_and_exits_1_on_problems(tmp_path, capsys,
     assert out["observed"]["counts"] == {"train": 1, "val": 0, "test": 0}
     assert out["observed"]["class_counts"]["train"] == {"0": 1}
     assert len(out["observed"]["sha256"]) == 64
-    assert out["expected"]["train"] == {"images": 9448, "authentic": 5223}
-    assert out["expected_provisional"] is True
+    assert out["expected"]["train"] == {"images": 9442, "authentic": 5253}
+    assert out["expected_provisional"] is False
     assert out["mask_available"] is False
-    assert all("(provisional)" in p for p in out["problems"])
+    assert all("(provisional)" not in p for p in out["problems"])
 
 
 def test_custom_expected_is_echoed_without_provisional_marker(tmp_path):
@@ -157,7 +157,7 @@ def test_custom_expected_is_echoed_without_provisional_marker(tmp_path):
 
 def test_cli_exits_0_when_split_and_masks_are_expected(tmp_path, capsys, monkeypatch):
     d = tmp_path / "data"; d.mkdir()
-    spec = {"train": (9448, 5223), "val": (1181, 903), "test": (1182, 927)}
+    spec = {"train": (9442, 5253), "val": (1180, 923), "test": (1181, 878)}
     for split, (n, n_auth) in spec.items():
         _write_split(d, split, n, n_auth)
     (tmp_path / "raw" / "Groundtruth").mkdir(parents=True)
