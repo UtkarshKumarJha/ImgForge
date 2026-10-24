@@ -121,14 +121,26 @@ def test_best_runs_use_checkpoint_val_f1(tmp_path):
     models = tmp_path / "models"
     _write_checkpoints(models, {
         "mlp_rgb_s1": 0.90, "mlp_rgb_s2": 0.95, "mlp_rgb_s3": 0.80,
-        # equal F1: the lower seed must win
-        "mlp_ela_s1": 0.80, "mlp_ela_s2": 0.80, "mlp_ela_s3": 0.70,
+        "mlp_ela_s1": 0.80, "mlp_ela_s2": 0.60, "mlp_ela_s3": 0.70,
+        "mlp_rgb_ela_s1": 0.80, "mlp_rgb_ela_s2": 0.80, "mlp_rgb_ela_s3": 0.80,
     })
 
     by_mode, by_arch = select_best_runs(str(models))
-    assert by_mode[("mlp", "rgb")] == "mlp_rgb_s2"
+    # seed means: s1=(.90+.80+.80)/3=.8333, s2=(.95+.60+.80)/3=.7833, s3=.7667
+    # Family A must not mix seeds, so s2's strong rgb run cannot be used.
+    assert by_mode[("mlp", "rgb")] == "mlp_rgb_s1"
     assert by_mode[("mlp", "ela")] == "mlp_ela_s1"
+    assert by_mode[("mlp", "rgb_ela")] == "mlp_rgb_ela_s1"
+    # Family B has no seed to hold fixed: it takes the single best run per arch.
     assert by_arch["mlp"] == "mlp_rgb_s2"
+
+
+def test_family_a_breaks_equal_seed_means_with_the_lower_seed(tmp_path):
+    models = tmp_path / "models"
+    _write_checkpoints(models)          # every run 0.80, so all seed means tie
+
+    by_mode, _ = select_best_runs(str(models))
+    assert all(name.endswith("_s1") for name in by_mode.values())
 
 
 def test_nan_val_f1_is_never_selected(tmp_path):

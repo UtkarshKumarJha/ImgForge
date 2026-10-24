@@ -38,6 +38,9 @@ def _read_fingerprint(data_dir):
         name = Path(getattr(e, "filename", None) or "").name
         return {"counts": {}, "class_counts": {}, "sha256": None}, (
             f"{name or 'split CSVs'} missing or unreadable: {e}")
+    except ValueError as e:
+        return {"counts": {}, "class_counts": {}, "sha256": None}, (
+            f"split CSVs are malformed: {e}")
 
 
 def verify_setup(data_dir, raw_dir, expected=None) -> dict:

@@ -60,7 +60,7 @@ def overlay_heatmap(original_image: np.ndarray, cam: np.ndarray, alpha: float = 
     Returns:
         overlay: (H, W, 3) uint8 RGB image
     """
-    import matplotlib.cm as cm  # only the colour overlay needs matplotlib
+    import matplotlib  # only the colour overlay needs matplotlib
 
     h, w = original_image.shape[:2]
 
@@ -68,7 +68,7 @@ def overlay_heatmap(original_image: np.ndarray, cam: np.ndarray, alpha: float = 
     cam_resized = cv2.resize(cam, (w, h))
 
     # Apply jet colormap
-    colormap = cm.get_cmap("jet")
+    colormap = matplotlib.colormaps["jet"]   # cm.get_cmap was removed in matplotlib 3.9
     heatmap_rgb = (colormap(cam_resized)[:, :, :3] * 255).astype(np.uint8)
 
     # Blend

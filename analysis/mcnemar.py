@@ -115,7 +115,10 @@ def _discover_checkpoints(models_dir: str) -> dict:
 
 
 def select_best_runs(models_dir: str) -> tuple[dict, dict]:
-    """Best checkpoint val_f1 per (arch, mode) and per arch; a NaN never wins."""
+    """Run per (arch, mode) holding one seed fixed per arch, plus the best run per arch.
+
+    A NaN val_f1 never wins anything.
+    """
     found = _discover_checkpoints(models_dir)
     seeds = sorted({seed for _, _, seed in found})
     missing_runs = [
@@ -127,15 +130,40 @@ def select_best_runs(models_dir: str) -> tuple[dict, dict]:
         if (arch, mode, seed) not in found
     ]
 
-    best_by_mode: dict[tuple[str, str], tuple[tuple[float, int], str]] = {}
+    # Family A compares input modes, so its three runs must share a seed; otherwise
+    # the test measures seed noise as much as the input mode. One seed per arch:
+    # highest mean val_f1 over its three modes, lower seed breaks a tie.
+    best_seed: dict[str, int] = {}
+    for arch in sorted(VALID_ARCHS):
+        scored = []
+        for seed in seeds:
+            vals = []
+            for mode in sorted(VALID_MODES):
+                if (arch, mode, seed) not in found:
+                    break
+                val_f1 = _checkpoint_val_f1(found[(arch, mode, seed)][1])
+                if val_f1 is None or not np.isfinite(val_f1):
+                    break
+                vals.append(val_f1)
+            else:
+                scored.append((float(np.mean(vals)), -seed, seed))
+        if scored:
+            best_seed[arch] = max(scored)[2]
+
+    best_by_mode: dict[tuple[str, str], str] = {
+        (arch, mode): found[(arch, mode, seed)][0]
+        for arch, seed in best_seed.items()
+        for mode in sorted(VALID_MODES)
+        if (arch, mode, seed) in found
+    }
+
+    # Family B has no seed to hold fixed; it takes the single best run per arch.
     best_by_arch: dict[str, tuple[tuple[float, int], str]] = {}
-    for (arch, mode, seed), (run_name, path) in sorted(found.items()):
+    for (arch, _mode, seed), (run_name, path) in sorted(found.items()):
         val_f1 = _checkpoint_val_f1(path)
         if val_f1 is None or not np.isfinite(val_f1):
             continue
         score = (val_f1, -seed)          # lower seed wins a tie
-        if (arch, mode) not in best_by_mode or score > best_by_mode[(arch, mode)][0]:
-            best_by_mode[(arch, mode)] = (score, run_name)
         if arch not in best_by_arch or score > best_by_arch[arch][0]:
             best_by_arch[arch] = (score, run_name)
 
@@ -161,7 +189,7 @@ def select_best_runs(models_dir: str) -> tuple[dict, dict]:
         raise ValueError("\n".join(lines))
 
     return (
-        {key: value[1] for key, value in best_by_mode.items()},
+        best_by_mode,
         {arch: value[1] for arch, value in best_by_arch.items()},
     )
 
@@ -250,6 +278,10 @@ def render_markdown(families, models_dir: str, thresholds: dict[str, float]) -> 
         f"checkpoint under `{models_dir}` (the same `val_f1` early stopping used); "
         "every McNemar test is scored on the test split, so selection never uses the "
         "reported split.",
+        "Family A holds the seed fixed within each architecture, picking the seed "
+        "whose three input-mode runs have the best mean val_f1 (the lower seed wins "
+        "a tie); pairing modes from different seeds would confound input mode with "
+        "seed noise.",
         "Predictions are aligned by image path before testing; `n` is the number of "
         "shared paths. Pairs whose path sets do not fully overlap are flagged below.",
         "Holm correction is applied separately within each pre-declared family; the "

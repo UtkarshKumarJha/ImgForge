@@ -331,6 +331,10 @@ def main():
                    help="Skip ELA cache warmup (use if cache is already populated)")
     args = p.parse_args()
 
+    if args.num_epochs > REFERENCE["num_epochs"]:
+        p.error(f"--num-epochs above {REFERENCE['num_epochs']} is outside the "
+                f"pre-declared sweep (a longer schedule is a different experiment)")
+
     os.makedirs(args.results_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
 
