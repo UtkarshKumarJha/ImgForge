@@ -3,7 +3,7 @@ import shutil
 import run_sweep
 from run_sweep import (
     build_eval_cmd, build_train_cmd, load_completed, persist_to_drive,
-    run_name_for,
+    restore_from_drive, run_name_for,
 )
 
 RUN = "resnet18_bilstm_rgb_ela_s1"
@@ -201,3 +201,18 @@ def test_persist_overwrites_a_stale_prediction(tmp_path):
     persist_to_drive(str(log), None, str(drive), RUN, str(preds))
 
     assert (drive / "predictions" / f"{RUN}_test.npz").read_bytes() == b"new"
+
+
+def test_restore_brings_back_checkpoints_without_clobbering_local_ones(tmp_path):
+    drive = tmp_path / "drive"
+    (drive / "models").mkdir(parents=True)
+    (drive / "models" / "a_best.pth").write_bytes(b"old")
+    (drive / "models" / "b_best.pth").write_bytes(b"drive")
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "a_best.pth").write_bytes(b"local")
+
+    restore_from_drive(str(tmp_path / "log.csv"), None, str(drive), str(models))
+
+    assert (models / "a_best.pth").read_bytes() == b"local"    # local is newer
+    assert (models / "b_best.pth").read_bytes() == b"drive"

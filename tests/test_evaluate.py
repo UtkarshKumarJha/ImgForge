@@ -118,3 +118,14 @@ def test_log_accepts_result_without_new_columns(tmp_path):
     assert list(row) == LOG_COLS
     assert row["f1_macro_tuned"] == ""
     assert row["degenerate"] == ""
+
+
+def test_log_refuses_to_append_under_an_older_header(tmp_path):
+    log = tmp_path / "log.csv"
+    log.write_text("timestamp,arch\n2026-10-01,mlp\n")
+
+    with pytest.raises(SystemExit) as err:
+        append_to_log({"arch": "mlp"}, str(log))
+
+    assert "Move it aside" in str(err.value)
+    assert log.read_text() == "timestamp,arch\n2026-10-01,mlp\n"   # untouched

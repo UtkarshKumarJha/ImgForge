@@ -173,6 +173,14 @@ def select_best_runs(models_dir: str) -> tuple[dict, dict]:
         for mode in sorted(VALID_MODES)
         if (arch, mode) not in best_by_mode
     ]
+    # Files can all be present and still unusable: Family A needs one seed whose
+    # three modes are all finite, which a per-cell best cannot supply.
+    no_clean_seed = [
+        arch for arch in sorted(VALID_ARCHS)
+        if arch not in best_seed
+        and any((arch, mode, seed) in found
+                for mode in VALID_MODES for seed in seeds)
+    ]
     missing_archs = [arch for arch in sorted(VALID_ARCHS)
                      if arch not in best_by_arch]
     if missing_runs or missing_cells or missing_archs:
@@ -184,6 +192,9 @@ def select_best_runs(models_dir: str) -> tuple[dict, dict]:
         if missing_cells:
             lines.append("  missing (arch, input mode) cells: "
                          + ", ".join(f"{a}/{m}" for a, m in missing_cells))
+        if no_clean_seed:
+            lines.append("  no seed has a finite val_f1 for all three input modes: "
+                         + ", ".join(no_clean_seed))
         if missing_archs:
             lines.append("  missing architectures: " + ", ".join(missing_archs))
         raise ValueError("\n".join(lines))
