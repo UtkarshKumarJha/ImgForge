@@ -23,11 +23,21 @@ def test_tune_threshold_maximises_macro_f1_on_validation():
 
 def test_save_predictions_roundtrip(tmp_path):
     f = tmp_path / "r.npz"
-    save_predictions(str(f), ["a.jpg", "b.jpg"], np.array([0, 1]), np.array([0.2, 0.8]))
+    save_predictions(str(f), ["a.jpg", "b.jpg"], np.array([0, 1]), np.array([0.2, 0.8]),
+                     threshold=0.37, tta=True)
     d = np.load(f, allow_pickle=False)
     assert list(d["paths"]) == ["a.jpg", "b.jpg"]
     assert d["labels"].tolist() == [0, 1]
     assert d["probs"].tolist() == pytest.approx([0.2, 0.8])
+    # Downstream analyses must score at the cut this run reported.
+    assert float(d["threshold"]) == pytest.approx(0.37)
+    assert bool(d["tta"]) is True
+
+
+def test_save_predictions_without_a_threshold_stores_nan(tmp_path):
+    f = tmp_path / "r.npz"
+    save_predictions(str(f), ["a.jpg"], np.array([0]), np.array([0.2]))
+    assert np.isnan(float(np.load(f)["threshold"]))
 
 
 def test_degenerate_predictions_are_flagged():
@@ -70,7 +80,8 @@ def test_tta_averages_image_and_horizontal_flip():
 
 
 def test_tta_and_no_tta_thresholds_are_tuned_separately():
-    # TTA and no-TTA validation distributions give different first-perfect cuts.
+    # Both distributions are perfectly separated, so each has a plateau:
+    # TTA on (0.30, 0.55] and no-TTA on (0.20, 0.45].
     y_tta = np.array([0, 0, 1, 1])
     p_tta = np.array([0.10, 0.30, 0.55, 0.70])
     y_nt = np.array([0, 0, 1, 1, 1, 1])
@@ -79,9 +90,18 @@ def test_tta_and_no_tta_thresholds_are_tuned_separately():
     decision_threshold, threshold_no_tta = tune_tta_and_no_tta_thresholds(
         y_tta, p_tta, y_nt, p_nt)
 
-    assert decision_threshold == pytest.approx(0.31)    # TTA optimum
-    assert threshold_no_tta == pytest.approx(0.21)      # no-TTA optimum
+    assert 0.30 < decision_threshold <= 0.55
+    assert 0.20 < threshold_no_tta <= 0.45
     assert decision_threshold != pytest.approx(threshold_no_tta)
+
+
+def test_tune_threshold_returns_the_plateau_midpoint():
+    # Perfect separation for t in (0.20, 0.50]; the answer sits mid-plateau,
+    # not at the low edge (0.21) which biased every reported number.
+    y = np.array([0, 0, 1, 1])
+    p = np.array([0.10, 0.20, 0.50, 0.90])
+    t = tune_threshold(y, p)
+    assert 0.30 <= t <= 0.40
 
 
 def test_log_accepts_result_without_new_columns(tmp_path):

@@ -54,15 +54,22 @@ def _pr(yt, _, ypr):    return average_precision_score(yt, ypr)
 
 def tune_threshold(y_true, y_prob, lo: float = 0.01, hi: float = 0.99,
                    step: float = 0.01) -> float:
-    """Probability cut maximising macro F1 on validation predictions."""
+    """Probability cut maximising macro F1 on validation predictions.
+
+    F1 is piecewise constant, so the optimum is usually a wide plateau. The
+    plateau midpoint is returned: taking its low edge (the first maximiser)
+    would systematically bias every reported number toward "tampered".
+    """
     if len(np.unique(y_true)) < 2:
         return 0.5
-    best_t, best_f1 = 0.5, -1.0
+    best_f1, winners = -1.0, []
     for t in np.arange(lo, hi + 1e-9, step):
         f1 = f1_score(y_true, (y_prob >= t).astype(int), average="macro", zero_division=0)
         if f1 > best_f1:
-            best_t, best_f1 = float(t), f1
-    return best_t
+            best_f1, winners = f1, [float(t)]
+        elif f1 == best_f1:
+            winners.append(float(t))
+    return winners[len(winners) // 2]
 
 
 def predict(model, loader, device, tta: bool = False):
@@ -82,9 +89,32 @@ def predict(model, loader, device, tta: bool = False):
     return np.array(all_labels), np.array(all_probs), paths
 
 
-def save_predictions(path: str, paths, y_true, y_prob) -> None:
+def save_predictions(path: str, paths, y_true, y_prob,
+                     threshold: float | None = None, tta: bool = False) -> None:
+    """Persist predictions together with the cut they were scored at.
+
+    Anything downstream (McNemar, confound) needs the same threshold this run
+    reported, otherwise it silently scores published numbers at a different cut.
+    """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    np.savez(path, paths=np.array(paths), labels=np.asarray(y_true), probs=np.asarray(y_prob))
+    np.savez(
+        path,
+        paths=np.array(paths), labels=np.asarray(y_true), probs=np.asarray(y_prob),
+        threshold=np.float64(threshold if threshold is not None else np.nan),
+        tta=np.bool_(tta),
+    )
+
+
+def resolve_threshold(d, npz_path: str = "", override: float | None = None) -> float:
+    """The threshold a prediction artefact was scored at, unless overridden."""
+    if override is not None:
+        return float(override)
+    t = float(d["threshold"]) if "threshold" in d.files else float("nan")
+    if not np.isfinite(t):
+        print(f"warning: {npz_path or 'predictions'} stores no tuned threshold; "
+              f"scoring at 0.50, which may not match the reported number")
+        return 0.5
+    return t
 
 
 def is_degenerate(pred) -> bool:
@@ -162,7 +192,7 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
 
     y_pred = (y_prob >= threshold).astype(int)
     pred_path = os.path.join("predictions", f"{run_name}_{split}.npz")
-    save_predictions(pred_path, paths, y_true, y_prob)
+    save_predictions(pred_path, paths, y_true, y_prob, threshold=threshold, tta=tta)
 
     metrics = {}
     rng = np.random.default_rng(0)
@@ -184,7 +214,8 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
     print("-" * 45)
     for name, m in metrics.items():
         print(f"{name:<15} {m['value']:>8.4f}  [{m['ci_lo']:.4f}, {m['ci_hi']:.4f}]")
-    print(f"\nthreshold={threshold:.2f}  tta={tta}  f1_argmax={f1_argmax:.4f}  "
+    print(f"\nthreshold={threshold:.2f}  threshold_no_tta={threshold_no_tta:.2f}  "
+          f"tta={tta}  f1_argmax={f1_argmax:.4f}  "
           f"f1_tuned={metrics['f1_macro']['value']:.4f}  "
           f"f1_tuned_no_tta={f1_no_tta:.4f}  degenerate={degenerate}")
     print(f"Predictions written to {pred_path}")
@@ -199,6 +230,7 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
         "metrics": metrics,
         "tta": tta,
         "decision_threshold": round(float(threshold), 4),
+        "threshold_no_tta": round(float(threshold_no_tta), 4),
         "f1_macro_argmax": round(f1_argmax, 4),
         "f1_macro_tuned": metrics["f1_macro"]["value"],
         "f1_macro_tuned_no_tta": round(f1_no_tta, 4),

@@ -9,6 +9,7 @@ from analysis.mcnemar import (
     align_runs,
     cross_arch_pairs,
     holm,
+    load_predictions,
     mcnemar_exact,
     mcnemar_pair,
     parse_run_name,
@@ -192,9 +193,25 @@ def _arch_probs(arch):
     return probs
 
 
-def _write_npz(path, paths, labels, probs):
+def _write_npz(path, paths, labels, probs, threshold=None, tta=False):
     np.savez(path, paths=np.array(paths), labels=np.array(labels),
-             probs=np.array(probs))
+             probs=np.array(probs),
+             threshold=np.float64(threshold if threshold is not None else np.nan),
+             tta=np.bool_(tta))
+
+
+def test_load_predictions_uses_the_artefact_threshold_and_warns_on_fallback(
+        tmp_path, capsys):
+    p = tmp_path / "a.npz"
+    _write_npz(p, ["x"], [1], [0.4], threshold=0.3)
+    # 0.40 clears the run's own 0.30 cut but not 0.50.
+    assert load_predictions(str(p))["preds"].tolist() == [1]
+    assert load_predictions(str(p), threshold=0.5)["preds"].tolist() == [0]
+
+    legacy = tmp_path / "legacy.npz"
+    np.savez(legacy, paths=["x"], labels=[1], probs=[0.4])
+    assert load_predictions(str(legacy))["preds"].tolist() == [0]
+    assert "no tuned threshold" in capsys.readouterr().out
 
 
 def _family_rows(md, title):
@@ -221,9 +238,9 @@ def test_cli_reports_both_families_and_path_overlap(tmp_path):
                 run = f"{arch}_{mode}_s{seed}"   # val ties break to seed 1
                 p = tmp_path / f"{run}_test.npz"
                 if run == "mlp_ela_s1":
-                    _write_npz(p, paths[:-1], LABELS[:-1], probs[:-1])
+                    _write_npz(p, paths[:-1], LABELS[:-1], probs[:-1], threshold=0.43)
                 else:
-                    _write_npz(p, paths, LABELS, probs)
+                    _write_npz(p, paths, LABELS, probs, threshold=0.43)
                 pred_files.append(str(p))
 
     out = tmp_path / "mcnemar.md"
@@ -239,7 +256,8 @@ def test_cli_reports_both_families_and_path_overlap(tmp_path):
     assert "Family B" in md and "6 tests" in md
     assert sum(line.startswith("| `") for line in md.splitlines()) == 18
     assert "validation" in md and "test split" in md
-    assert "Decision threshold: 0.50" in md
+    assert "`mlp_ela_s1`=0.43" in md      # the artefacts' own cuts, not 0.5
+    assert "0.50" not in md
     assert md.count("`b` counts images A") == 2
     assert "Reduced path overlap" in md
     assert "`mlp_ela_s1 vs mlp_rgb_s1`: 9 of 9 / 10" in md
