@@ -42,9 +42,9 @@ SEEDS = [1, 2, 3]
 # grid with slack for reruns, and the 10-epoch pilot tied 224 (0.8104 val macro-F1)
 # against 256 (0.8066).
 REFERENCE = {
-    "image_size": 224,
+    "image_size": 224,   # the pilot's validation winner (0.8104 vs 0.8066 at 256)
     "fusion": "dual",
-    "num_epochs": 30,
+    "num_epochs": 60,    # the declared cap; early stopping at patience 10 ends most runs sooner
     "batch_size": 16,
     "lr_new": 1e-3,
     "warmup": 5,

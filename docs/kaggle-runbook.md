@@ -14,7 +14,8 @@ Kernel: https://www.kaggle.com/code/utkarshkumarjha/imgforge-metric-sweep
 | 5 | s0 | mount of own output verified, gate green |
 | 6 | pilot | 256 arm ok, 224 arm failed on checkpoint naming (fixed) |
 | 7 | pilot | rerun with the naming fix + 3-epoch timing probes |
-| 8 | sweep | **the 36 reported runs**, seeds 1 2 3 (running at handoff, paused only by the 12 h cap) |
+| 8 | sweep | 224 px / 30 epochs, seeds 1 2 3 — **abandoned** when the second account freed the budget for the declared 60-epoch cap |
+| 9+ | sweep | **the 36 reported runs**, 224 px / 60 epochs, split across two accounts |
 
 ## State
 
@@ -22,13 +23,16 @@ Kernel: https://www.kaggle.com/code/utkarshkumarjha/imgforge-metric-sweep
   (CASIA ships no ground-truth masks, so localization coverage will be 0).
 - Split, measured: train 9442 (5253 authentic), val 1180 (923), test 1181 (878).
   Fingerprint `79e78eb2…`, recorded in `scripts/verify_setup.py`.
-- Declared sweep config (`run_sweep.REFERENCE`): **224 px, 30 epochs**, batch 16,
-  dual fusion, lr_new 1e-3, warmup 5. Why: 256 px costs ~58 s per train epoch, so
-  60 epochs × 36 runs ≈ 45 h against a 30 h weekly GPU quota; the 10-epoch pilot
-  tied 224 (0.8104 val macro-F1) with 256 (0.8066).
+- Declared sweep config (`run_sweep.REFERENCE`): **224 px, 60 epochs** (early stop,
+  patience 10), batch 16, dual fusion, lr_new 1e-3, warmup 5. 224 px is the pilot's
+  validation winner (0.8104 vs 0.8066 at 256); 60 is the cap the design declares.
+  The 30-epoch version run as v8 was a quota concession and is discarded.
 - Pilot (v6, 10 epochs, EfficientNet-B0/ELA): best val F1 0.8066 at 256 px,
   0.8104 at 224 px.
-- Prediction: 36 runs at 224/30 ≈ 17 h of GPU, i.e. two 12 h sessions.
+- Prediction: 36 runs at 224/60 ≈ 30-40 h of GPU (early stopping cuts most runs
+  before 60). Split across two accounts, run concurrently:
+  - account A (this one): `efficientnet_b0 resnet18_bilstm mlp` ≈ 18 h
+  - account B (borrowed): `swin_tiny` alone ≈ 15-22 h, separate kernel + persist chain
 
 ## Resume (any machine with this repo and `~/.kaggle/access_token`)
 
