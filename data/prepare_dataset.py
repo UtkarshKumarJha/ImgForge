@@ -34,7 +34,12 @@ def split_fingerprint(csv_dir):
     counts, class_counts, lines = {}, {}, []
     for split in ("train", "val", "test"):
         with open(Path(csv_dir) / f"{split}.csv", newline="") as f:
-            rows = list(csv.DictReader(f))
+            reader = csv.DictReader(f)
+            missing = {"path", "label"} - set(reader.fieldnames or [])
+            if missing:
+                raise ValueError(
+                    f"{split}.csv lacks column(s): {', '.join(sorted(missing))}")
+            rows = list(reader)
         counts[split] = len(rows)
         split_classes = defaultdict(int)
         for row in rows:

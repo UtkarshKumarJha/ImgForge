@@ -96,6 +96,19 @@ def test_missing_split_csv_is_a_problem_not_a_traceback(tmp_path):
     assert r["sha256"] is None
 
 
+def test_missing_label_column_is_a_problem_not_a_traceback(tmp_path):
+    d = tmp_path / "data"; d.mkdir()
+    (d / "train.csv").write_text("path\n/x/0.jpg\n")
+    for split in ("val", "test"):
+        _write_split(d, split, 0, 0)
+
+    r = verify_setup(str(d), str(tmp_path / "missing_raw"), {"train": (1, 1)})
+
+    assert r["split_ok"] is False
+    assert any("train.csv lacks column(s): label" in p for p in r["problems"])
+    assert r["sha256"] is None
+
+
 def test_unexpected_label_is_a_problem(tmp_path):
     d = tmp_path / "data"; d.mkdir()
     (d / "train.csv").write_text("path,label\n/x/0.jpg,0\n/x/1.jpg,0\n/x/2.jpg,2\n")
