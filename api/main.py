@@ -67,7 +67,7 @@ CHECKPOINT = os.path.join(
 print(f"Using device: {DEVICE}")
 print("Loading ImgForge model...")
 
-model = load_model(CHECKPOINT, DEVICE)
+model, CFG = load_model(CHECKPOINT, DEVICE)
 
 target_layer = get_gradcam_target_layer(model)
 gradcam = GradCAM(model, target_layer)
@@ -178,7 +178,9 @@ async def analyze_image(file: UploadFile = File(...)):
 
         tensor, rgb_vis = preprocess(
             temp_path,
-            DEVICE
+            DEVICE,
+            CFG.get("image_size", 224),
+            CFG.get("input_mode", "rgb_ela"),
         )
 
         tensor.requires_grad_(True)

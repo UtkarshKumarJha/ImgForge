@@ -18,7 +18,7 @@ from sklearn.metrics import (
 )
 
 from data.dataset import ForgeryDataset
-from model_factory import build_from_checkpoint
+from model_factory import load_model_from_checkpoint
 
 
 def bootstrap_ci(y_true, y_pred, y_prob, metric_fn, n_boot=2000, ci=0.95, rng=None):
@@ -115,9 +115,7 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
     input_mode = cfg.get("input_mode", "rgb_ela")
     run_name = cfg.get("run_name") or os.path.splitext(os.path.basename(checkpoint_path))[0]
 
-    model = build_from_checkpoint(ckpt)
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.to(device)
+    model = load_model_from_checkpoint(ckpt, device)
     model.eval()
     print(f"Loaded {arch}/{input_mode} from {checkpoint_path} "
           f"(val_f1={ckpt.get('val_f1', '?')})")

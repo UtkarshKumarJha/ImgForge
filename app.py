@@ -9,11 +9,10 @@ import os
 
 from data.ela import compute_ela
 from gradcam import GradCAM, overlay_heatmap, parse_tamper_zone, get_gradcam_target_layer
-from model_factory import build_from_checkpoint
+from model_factory import input_spec, load_model_from_checkpoint
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CHECKPOINT  = "models/best_model.pth"
-IMAGE_SIZE  = 224
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -84,19 +83,19 @@ st.markdown("""
 @st.cache_resource
 def load_model():
     ckpt = torch.load(CHECKPOINT, map_location=DEVICE, weights_only=False)
-    model = build_from_checkpoint(ckpt)
-    model.to(DEVICE)
+    model = load_model_from_checkpoint(ckpt, DEVICE)
     model.eval()
-    return model, ckpt["val_f1"], ckpt["epoch"]
+    return model, ckpt["val_f1"], ckpt["epoch"], ckpt.get("cfg", {})
 
 
-def preprocess_pil(pil_image: Image.Image, tmp_path: str):
+def preprocess_pil(pil_image: Image.Image, tmp_path: str, cfg=None):
+    channels, image_size = input_spec(cfg or {})
     pil_image.save(tmp_path, format="JPEG", quality=95)
 
     rgb = np.array(pil_image.convert("RGB"), dtype=np.float32) / 255.0
     rgb_resized = np.array(
         Image.fromarray((rgb * 255).astype(np.uint8)).resize(
-            (IMAGE_SIZE, IMAGE_SIZE), Image.BILINEAR
+            (image_size, image_size), Image.BILINEAR
         ), dtype=np.float32
     ) / 255.0
 
@@ -107,7 +106,7 @@ def preprocess_pil(pil_image: Image.Image, tmp_path: str):
     ela = compute_ela(tmp_path)
     ela_resized = np.array(
         Image.fromarray((ela * 255).astype(np.uint8)).resize(
-            (IMAGE_SIZE, IMAGE_SIZE), Image.BILINEAR
+            (image_size, image_size), Image.BILINEAR
         ), dtype=np.float32
     ) / 255.0
     ela_gray = ela_resized.mean(axis=2)
@@ -115,7 +114,12 @@ def preprocess_pil(pil_image: Image.Image, tmp_path: str):
 
     rgb_t = torch.from_numpy(rgb_norm.transpose(2, 0, 1)).float()
     ela_t = torch.from_numpy(ela_gray).unsqueeze(0).float()
-    tensor = torch.cat([rgb_t, ela_t], dim=0).unsqueeze(0).to(DEVICE)
+    parts = []
+    if channels != 1:       # rgb, rgb_ela
+        parts.append(rgb_t)
+    if channels != 3:       # ela, rgb_ela
+        parts.append(ela_t)
+    tensor = torch.cat(parts, dim=0).unsqueeze(0).to(DEVICE)
 
     return tensor, rgb_resized, ela
 
@@ -177,7 +181,7 @@ def main():
     st.markdown("---")
 
     try:
-        model, best_f1, best_epoch = load_model()
+        model, best_f1, best_epoch, cfg = load_model()
         col_s1, col_s2, col_s3 = st.columns(3)
         with col_s1:
             st.markdown(f"""<div class='metric-card'>
@@ -224,7 +228,7 @@ def main():
 
     with st.spinner("Running ImgForge analysis..."):
         try:
-            tensor, rgb_vis, ela = preprocess_pil(pil_image, tmp_path)
+            tensor, rgb_vis, ela = preprocess_pil(pil_image, tmp_path, cfg)
             pred_class, confidence, forged_prob, cam, zone_info = run_inference(model, tensor)
         except Exception as e:
             st.error(f"Inference failed: {e}")

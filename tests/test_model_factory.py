@@ -50,3 +50,43 @@ def test_build_from_checkpoint_restores_layout():
     assert conv.in_channels == 4
     assert conv.out_channels == ref.features[0][0].out_channels
     assert not hasattr(conv, "rgb_conv")
+
+
+def test_dual_aux_branch_is_default_initialised_not_rgb_mean():
+    from model_factory import DualStem
+
+    m = build_model("efficientnet_b0", "rgb_ela", fusion="dual")
+    stem = m.features[0][0]
+    assert isinstance(stem, DualStem)
+    rgb_mean = stem.rgb_conv.weight.mean(dim=1, keepdim=True).expand(-1, 1, -1, -1)
+    # Default init would only match the RGB mean by coincidence.
+    assert not torch.allclose(stem.aux_conv.weight, rgb_mean, atol=1e-6)
+
+
+def test_load_model_from_checkpoint_round_trips_weights():
+    from model_factory import build_model, load_model_from_checkpoint
+
+    src = build_model("efficientnet_b0", "rgb_ela", fusion="dual").eval()
+    with torch.no_grad():
+        for p in src.parameters():
+            p.add_(0.01)          # distinctive weights, not the pretrained init
+    ckpt = {"cfg": {"arch": "efficientnet_b0", "input_mode": "rgb_ela",
+                    "fusion": "dual"},
+            "model_state_dict": src.state_dict()}
+
+    got = load_model_from_checkpoint(ckpt).eval()
+    x = torch.randn(2, 4, 224, 224)
+    with torch.no_grad():
+        assert torch.allclose(got(x), src(x), atol=1e-5)
+
+
+def test_load_model_from_checkpoint_rejects_mismatched_weights():
+    import pytest
+    from model_factory import build_model, load_model_from_checkpoint
+
+    bad = {"cfg": {"arch": "efficientnet_b0", "input_mode": "rgb_ela",
+                   "fusion": "dual"},
+           "model_state_dict": build_model("efficientnet_b0", "rgb",
+                                           fusion="concat").state_dict()}
+    with pytest.raises(RuntimeError):
+        load_model_from_checkpoint(bad)

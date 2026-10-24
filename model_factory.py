@@ -51,10 +51,22 @@ class DualStem(nn.Module):
         return self.rgb_conv(x[:, :3]) + self.aux_conv(x[:, 3:])
 
 
+def _aux_conv(conv: nn.Conv2d) -> nn.Conv2d:
+    """A default-initialised 1-channel copy of the stem's shape (dual ELA branch)."""
+    return nn.Conv2d(
+        1, conv.out_channels,
+        kernel_size=conv.kernel_size,
+        stride=conv.stride,
+        padding=conv.padding,
+        bias=conv.bias is not None,
+    )
+
+
 def _adapt_stem(conv: nn.Conv2d, in_channels: int, fusion: str) -> nn.Module:
     """Keep the pretrained 3-channel conv intact when fusing ELA in a dual stem."""
     if in_channels == 4 and fusion == "dual":
-        return DualStem(conv, _adapt_conv(conv, 1))
+        # Spec §1: the aux branch starts as a residual filter, not a blurred RGB copy.
+        return DualStem(conv, _aux_conv(conv))
     return _adapt_conv(conv, in_channels)
 
 
@@ -189,3 +201,15 @@ def build_from_checkpoint(ckpt) -> nn.Module:
         cfg.get("input_mode", "rgb_ela"),
         fusion=cfg.get("fusion", "concat"),
     )
+
+
+def load_model_from_checkpoint(ckpt, device=None) -> nn.Module:
+    """Build the checkpoint's layout and load its weights with strict=True."""
+    model = build_from_checkpoint(ckpt)
+    model.load_state_dict(ckpt["model_state_dict"], strict=True)
+    return model if device is None else model.to(device)
+
+
+def input_spec(cfg) -> tuple[int, int]:
+    """(channels, image size) for a checkpoint cfg; old checkpoints were 4ch @ 224."""
+    return _input_channels(cfg.get("input_mode", "rgb_ela")), cfg.get("image_size", 224)

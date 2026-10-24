@@ -9,7 +9,7 @@ from tqdm import tqdm
 from sklearn.metrics import f1_score
 
 from data.ela import compute_ela
-from model_factory import build_from_checkpoint
+from model_factory import load_model_from_checkpoint
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
@@ -84,7 +84,7 @@ class IDDocDataset(Dataset):
 
 # ── Load pretrained checkpoint ────────────────────────────────────────────────
 ckpt = torch.load(CHECKPOINT, map_location=DEVICE, weights_only=False)
-model = build_from_checkpoint(ckpt)
+model = load_model_from_checkpoint(ckpt)
 print(f"Loaded checkpoint — base val F1: {ckpt['val_f1']:.4f}")
 
 # Freeze backbone, only train classifier head for first 10 epochs
