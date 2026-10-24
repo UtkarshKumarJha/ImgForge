@@ -1,7 +1,10 @@
 import shutil
 
 import run_sweep
-from run_sweep import build_eval_cmd, build_train_cmd, persist_to_drive
+from run_sweep import (
+    build_eval_cmd, build_train_cmd, load_completed, persist_to_drive,
+    run_name_for,
+)
 
 RUN = "resnet18_bilstm_rgb_ela_s1"
 
@@ -113,3 +116,88 @@ def test_persist_writes_log_last(tmp_path, monkeypatch):
 
     assert copied[-1] == str(drive / "experiment_log.csv")
     assert str(drive / "predictions" / f"{RUN}_test.npz") in copied
+
+
+def test_run_name_has_no_suffix_for_the_reference_config():
+    assert run_name_for("swin_tiny", "rgb_ela", 2, A) == "swin_tiny_rgb_ela_s2"
+
+
+def test_deviating_config_changes_the_run_name():
+    class P224(A):
+        image_size = 224
+
+    class Concat(A):
+        fusion = "concat"
+
+    class Both(P224):
+        fusion = "concat"
+
+    class NoTTA(A):
+        tta = False
+
+    assert run_name_for("swin_tiny", "rgb_ela", 2, P224) == "swin_tiny_rgb_ela_p224_s2"
+    assert run_name_for("swin_tiny", "rgb_ela", 2, Concat) == "swin_tiny_rgb_ela_concat_s2"
+    assert run_name_for("swin_tiny", "rgb_ela", 2, Both) == "swin_tiny_rgb_ela_p224_concat_s2"
+    assert run_name_for("swin_tiny", "rgb_ela", 2, NoTTA) == "swin_tiny_rgb_ela_notta_s2"
+
+
+def test_deviation_keeps_seed_last_so_mcnemar_can_parse_it():
+    from analysis.mcnemar import parse_run_name
+
+    class P224(A):
+        image_size = 224
+
+    name = run_name_for("resnet18_bilstm", "rgb_ela", 3, P224)
+    assert parse_run_name(name) == ("resnet18_bilstm", "rgb_ela")
+    assert name.rsplit("_s", 1)[1] == "3"
+
+
+def test_load_completed_uses_the_run_name_column(tmp_path):
+    log = tmp_path / "log.csv"
+    log.write_text("arch,input_mode,seed,run_name\n"
+                   "swin_tiny,rgb_ela,1,swin_tiny_rgb_ela_p224_s1\n"
+                   "swin_tiny,rgb_ela,2,\n")   # legacy row: no run_name recorded
+
+    completed = load_completed(str(log))
+    assert "swin_tiny_rgb_ela_p224_s1" in completed        # pilot does not block 256
+    assert "swin_tiny_rgb_ela_s1" not in completed
+    assert "swin_tiny_rgb_ela_s2" in completed             # undeviated fallback
+
+
+def test_persist_copies_the_checkpoint(tmp_path):
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / f"{RUN}_best.pth").write_bytes(b"ckpt")
+    log = tmp_path / "experiment_log.csv"
+    log.write_text("arch\n")
+
+    persist_to_drive(str(log), None, str(tmp_path / "drive"), RUN,
+                     str(tmp_path / "predictions"), str(models))
+
+    assert (tmp_path / "drive" / "models" / f"{RUN}_best.pth").read_bytes() == b"ckpt"
+
+
+def test_persist_warns_when_the_checkpoint_is_missing(tmp_path, capsys):
+    log = tmp_path / "experiment_log.csv"
+    log.write_text("arch\n")
+
+    persist_to_drive(str(log), None, str(tmp_path / "drive"), RUN,
+                     str(tmp_path / "predictions"), str(tmp_path / "models"))
+
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "checkpoint" in out
+
+
+def test_persist_overwrites_a_stale_prediction(tmp_path):
+    preds = tmp_path / "predictions"
+    preds.mkdir()
+    (preds / f"{RUN}_test.npz").write_bytes(b"new")
+    drive = tmp_path / "drive"
+    (drive / "predictions").mkdir(parents=True)
+    (drive / "predictions" / f"{RUN}_test.npz").write_bytes(b"old")
+    log = tmp_path / "experiment_log.csv"
+    log.write_text("arch\n")
+
+    persist_to_drive(str(log), None, str(drive), RUN, str(preds))
+
+    assert (drive / "predictions" / f"{RUN}_test.npz").read_bytes() == b"new"
