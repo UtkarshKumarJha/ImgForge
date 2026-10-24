@@ -222,6 +222,7 @@ def evaluate(checkpoint_path: str, data_dir: str, split: str = "test",
 
     result = {
         "checkpoint": checkpoint_path,
+        "run_name": run_name,
         "arch": arch,
         "input_mode": input_mode,
         "seed": cfg.get("seed", "?"),

@@ -18,6 +18,7 @@ LOG_COLS = [
     "f1_macro_argmax", "f1_macro_tuned", "f1_macro_tuned_no_tta",
     "degenerate",
     "checkpoint",
+    "run_name",
 ]
 
 DEFAULT_LOG = "results/experiment_log.csv"
@@ -29,6 +30,8 @@ def append_to_log(result: dict, log_path: str = DEFAULT_LOG):
 
     row = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+        # The sweep resumes on this name, so it must carry any config deviation.
+        "run_name": result.get("run_name", ""),
         "arch": result["arch"],
         "input_mode": result["input_mode"],
         "seed": result["seed"],

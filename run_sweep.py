@@ -33,15 +33,57 @@ ARCHS = ["efficientnet_b0", "mlp", "resnet18_bilstm", "swin_tiny"]
 INPUT_MODES = ["rgb", "ela", "rgb_ela"]
 SEEDS = [1, 2, 3]
 
+# The configuration the sweep reports. A run that departs from it gets the
+# deviation in its name, so a pilot arm can never masquerade as a reported run.
+REFERENCE = {
+    "image_size": 256,
+    "fusion": "dual",
+    "num_epochs": 60,
+    "batch_size": 16,
+    "lr_new": 1e-3,
+    "warmup": 5,
+    "grad_clip": 1.0,
+    "ela_quality": 75,
+}
+# Short tag per non-default setting; fusion reads as the bare value (e.g. `concat`).
+_TAGS = {"image_size": "p", "num_epochs": "e", "batch_size": "b", "lr_new": "lr",
+         "warmup": "w", "grad_clip": "gc", "ela_quality": "q", "fusion": ""}
 
-def load_completed(log_path: str) -> set[tuple[str, str, int]]:
+
+def deviation_suffix(args) -> str:
+    """`_p224` / `_concat` / `_p224_concat` when the config departs from REFERENCE."""
+    tags = []
+    for key, ref in REFERENCE.items():
+        value = getattr(args, key)
+        if value == ref:
+            continue
+        tag = _TAGS[key]
+        tags.append(f"{tag}{value}" if tag else str(value))
+    if not getattr(args, "tta", True):
+        tags.append("notta")
+    return "_" + "_".join(tags) if tags else ""
+
+
+def run_name_for(arch: str, input_mode: str, seed: int, args) -> str:
+    """`{arch}_{mode}[_deviations]_s{seed}`.
+
+    The `_s{seed}` suffix must stay last: analysis/mcnemar.py splits run names
+    on it to recover the seed.
+    """
+    return f"{arch}_{input_mode}{deviation_suffix(args)}_s{seed}"
+
+
+def load_completed(log_path: str) -> set[str]:
+    """Run names already logged. Logs predating the run_name column fall back to
+    the (arch, input_mode, seed) triple, which only matches undeviated runs."""
     completed = set()
     if not os.path.exists(log_path):
         return completed
     with open(log_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            completed.add((row["arch"], row["input_mode"], int(row["seed"])))
+            completed.add(row.get("run_name")
+                          or f"{row['arch']}_{row['input_mode']}_s{row['seed']}")
     return completed
 
 
@@ -72,7 +114,8 @@ def warmup_ela_cache(data_dir: str, ela_quality: int, cache_dir: str):
 
 
 def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | None,
-                     run_name: str, predictions_dir: str = "predictions"):
+                     run_name: str, predictions_dir: str = "predictions",
+                     models_dir: str = "models"):
     if not persist_dir:
         return
     os.makedirs(persist_dir, exist_ok=True)
@@ -97,12 +140,11 @@ def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | No
         os.makedirs(dest_preds, exist_ok=True)
         count = 0
         for npz in Path(predictions_dir).glob("*.npz"):
-            dest = os.path.join(dest_preds, npz.name)
-            if not os.path.exists(dest):
-                shutil.copy2(str(npz), dest)
-                count += 1
+            # Overwrite: a re-run of the same name must not keep the old decisions.
+            shutil.copy2(str(npz), os.path.join(dest_preds, npz.name))
+            count += 1
         if count:
-            print(f"  Persisted {count} new prediction files")
+            print(f"  Persisted {count} prediction files")
         expected = os.path.join(dest_preds, f"{run_name}_test.npz")
         if not os.path.exists(expected):
             print(f"  WARNING: no predictions for {run_name} in {predictions_dir} "
@@ -111,13 +153,27 @@ def persist_to_drive(log_path: str, cache_dir: str | None, persist_dir: str | No
         print(f"  WARNING: predictions dir not found: {predictions_dir} — "
               f"no prediction artefacts persisted for {run_name}")
 
+    # The checkpoint is what the McNemar analysis selects representatives from,
+    # so an unpinned Colab runtime loses the ability to run it at all.
+    ckpt = os.path.join(models_dir, f"{run_name}_best.pth")
+    dest_models = os.path.join(persist_dir, os.path.basename(os.path.normpath(models_dir)))
+    if os.path.exists(ckpt):
+        os.makedirs(dest_models, exist_ok=True)
+        dest = os.path.join(dest_models, os.path.basename(ckpt))
+        shutil.copy2(ckpt, dest)          # overwrite: a re-run supersedes the old one
+        print(f"  Persisted {ckpt} -> {dest}")
+    else:
+        print(f"  WARNING: checkpoint not found: {ckpt} — the McNemar analysis "
+              f"cannot select this run's representative without it")
+
     if os.path.exists(log_path):
         dest = os.path.join(persist_dir, os.path.basename(log_path))
         shutil.copy2(log_path, dest)
         print(f"  Persisted {log_path} -> {dest}")
 
 
-def restore_from_drive(log_path: str, cache_dir: str | None, persist_dir: str | None):
+def restore_from_drive(log_path: str, cache_dir: str | None, persist_dir: str | None,
+                       models_dir: str = "models"):
     if not persist_dir:
         return
 
@@ -139,6 +195,18 @@ def restore_from_drive(log_path: str, cache_dir: str | None, persist_dir: str | 
                     restored += 1
             if restored:
                 print(f"Restored {restored} ELA cache files from {persisted_cache}")
+
+    persisted_models = os.path.join(persist_dir, os.path.basename(os.path.normpath(models_dir)))
+    if os.path.isdir(persisted_models):
+        os.makedirs(models_dir, exist_ok=True)
+        restored = 0
+        for pth in Path(persisted_models).glob("*.pth"):
+            dest = os.path.join(models_dir, pth.name)
+            if not os.path.exists(dest):     # a local checkpoint is newer than the copy
+                shutil.copy2(str(pth), dest)
+                restored += 1
+        if restored:
+            print(f"Restored {restored} checkpoints from {persisted_models}")
 
 
 def build_train_cmd(args, arch: str, input_mode: str, seed: int) -> list[str]:
@@ -180,7 +248,7 @@ def build_eval_cmd(args, ckpt_path: str, json_path: str) -> list[str]:
 
 
 def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
-    run_name = f"{arch}_{input_mode}_s{seed}"
+    run_name = run_name_for(arch, input_mode, seed, args)
     ckpt_path = os.path.join(args.out_dir, f"{run_name}_best.pth")
     json_path = os.path.join(args.results_dir, f"{run_name}.json")
 
@@ -239,17 +307,17 @@ def main():
     p.add_argument("--out-dir", default="models")
     p.add_argument("--results-dir", default="results")
     p.add_argument("--log-path", default="results/experiment_log.csv")
-    p.add_argument("--num-epochs", type=int, default=60)
-    p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument("--num-epochs", type=int, default=REFERENCE["num_epochs"])
+    p.add_argument("--batch-size", type=int, default=REFERENCE["batch_size"])
     p.add_argument("--num-workers", type=int, default=2)
-    p.add_argument("--image-size", type=int, default=256)
-    p.add_argument("--lr-new", type=float, default=1e-3)
-    p.add_argument("--warmup", type=int, default=5)
-    p.add_argument("--grad-clip", type=float, default=1.0)
-    p.add_argument("--fusion", default="dual", choices=["dual", "concat"])
+    p.add_argument("--image-size", type=int, default=REFERENCE["image_size"])
+    p.add_argument("--lr-new", type=float, default=REFERENCE["lr_new"])
+    p.add_argument("--warmup", type=int, default=REFERENCE["warmup"])
+    p.add_argument("--grad-clip", type=float, default=REFERENCE["grad_clip"])
+    p.add_argument("--fusion", default=REFERENCE["fusion"], choices=["dual", "concat"])
     p.add_argument("--no-tta", action="store_false", dest="tta", default=True,
                    help="Disable test-time augmentation (on by default)")
-    p.add_argument("--ela-quality", type=int, default=75)
+    p.add_argument("--ela-quality", type=int, default=REFERENCE["ela_quality"])
     p.add_argument("--ela-cache-dir", default="data/ela_cache")
     p.add_argument("--persist-dir", default=None,
                    help="Persistent storage (e.g. /content/drive/MyDrive/ImgForge)")
@@ -273,7 +341,8 @@ def main():
         print("WARNING: --persist-dir is unset — results and predictions will NOT "
               "survive this session!")
 
-    restore_from_drive(args.log_path, args.ela_cache_dir, args.persist_dir)
+    restore_from_drive(args.log_path, args.ela_cache_dir, args.persist_dir,
+                       args.out_dir)
 
     needs_ela = any(m in ("ela", "rgb_ela") for m in args.input_modes)
     if needs_ela and args.ela_cache_dir and not args.skip_ela_warmup:
@@ -281,31 +350,35 @@ def main():
 
     completed = load_completed(args.log_path)
     total = len(args.seeds) * len(args.archs) * len(args.input_modes)
+    already = sum(
+        1 for seed in args.seeds for arch in args.archs for mode in args.input_modes
+        if run_name_for(arch, mode, seed, args) in completed)
     print(f"\nSweep: {len(args.archs)} archs x {len(args.input_modes)} modes x {len(args.seeds)} seeds = {total} combos")
-    print(f"Already completed: {len(completed)}")
-    print(f"Remaining: {total - len(completed)}")
+    print(f"Already completed: {already}")
+    print(f"Remaining: {total - already}")
 
     done, failed = 0, 0
     for seed in args.seeds:
         for arch in args.archs:
             for input_mode in args.input_modes:
-                if (arch, input_mode, seed) in completed:
-                    print(f"\nSKIP: {arch}_{input_mode}_s{seed} (already in log)")
+                run_name = run_name_for(arch, input_mode, seed, args)
+                if run_name in completed:
+                    print(f"\nSKIP: {run_name} (already in log)")
                     continue
 
                 ok = run_combo(arch, input_mode, seed, args)
                 if ok:
                     done += 1
-                    completed.add((arch, input_mode, seed))
+                    completed.add(run_name)
                     persist_to_drive(args.log_path, args.ela_cache_dir,
-                                     args.persist_dir,
-                                     f"{arch}_{input_mode}_s{seed}")
+                                     args.persist_dir, run_name,
+                                     models_dir=args.out_dir)
                 else:
                     failed += 1
 
     print(f"\n{'='*60}")
     print(f"SWEEP DONE: {done} new, {failed} failed, "
-          f"{len(completed) - done} previously done, {total} total")
+          f"{already} previously done, {total} total")
     print(f"{'='*60}")
 
 
