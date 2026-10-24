@@ -210,7 +210,8 @@ def restore_from_drive(log_path: str, cache_dir: str | None, persist_dir: str | 
             print(f"Restored {restored} checkpoints from {persisted_models}")
 
 
-def build_train_cmd(args, arch: str, input_mode: str, seed: int) -> list[str]:
+def build_train_cmd(args, arch: str, input_mode: str, seed: int,
+                    run_name: str) -> list[str]:
     cmd = [
         sys.executable, "train.py",
         "--arch", arch,
@@ -227,6 +228,7 @@ def build_train_cmd(args, arch: str, input_mode: str, seed: int) -> list[str]:
         "--grad-clip", str(args.grad_clip),
         "--fusion", args.fusion,
         "--out-dir", args.out_dir,
+        "--run-name", run_name,
     ]
     if args.wandb:
         cmd.append("--wandb")
@@ -261,7 +263,7 @@ def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
         print("SKIPPED: not enough disk space to save checkpoint")
         return False
 
-    train_cmd = build_train_cmd(args, arch, input_mode, seed)
+    train_cmd = build_train_cmd(args, arch, input_mode, seed, run_name)
 
     ret = subprocess.run(train_cmd)
     if ret.returncode != 0:

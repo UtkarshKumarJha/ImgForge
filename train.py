@@ -89,6 +89,8 @@ def parse_args():
     p.add_argument("--ela-quality", type=int, default=75)
     p.add_argument("--wandb", action="store_true", help="Enable W&B logging")
     p.add_argument("--out-dir", type=str, default="models")
+    p.add_argument("--run-name", type=str, default="",
+                   help="Checkpoint name; the sweep passes its deviation-suffixed name")
     args = p.parse_args()
     if args.lr_backbone is None:
         args.lr_backbone = 2e-5 if args.arch == "swin_tiny" else 1e-4
@@ -100,7 +102,7 @@ def main():
     seed_everything(args.seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    run_name = f"{args.arch}_{args.input_mode}_s{args.seed}"
+    run_name = args.run_name or f"{args.arch}_{args.input_mode}_s{args.seed}"
 
     cfg = vars(args)
     cfg["device"] = device
