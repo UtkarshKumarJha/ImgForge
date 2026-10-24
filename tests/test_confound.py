@@ -56,11 +56,13 @@ def test_cli_writes_markdown_and_counts_unreadable_quality(tmp_path):
     bmp = tmp_path / "flat.bmp"
     Image.new("RGB", (16, 16)).save(bmp)      # no quantization table -> None
     imgs.append((str(bmp), 0))
+    imgs.append((str(tmp_path / "gone.jpg"), 1))   # never written -> unopenable
 
     npz = tmp_path / "runA_test.npz"
     np.savez(npz, paths=np.array([p for p, _ in imgs]),
              labels=np.array([l for _, l in imgs]),
-             probs=np.array([0.1, 0.2, 0.9, 0.8, 0.1]))
+             probs=np.array([0.1, 0.2, 0.9, 0.8, 0.1, 0.4]),
+             threshold=np.float64(0.42), tta=np.bool_(True))
     out = tmp_path / "confound.md"
 
     subprocess.run(
@@ -72,7 +74,29 @@ def test_cli_writes_markdown_and_counts_unreadable_quality(tmp_path):
 
     md = out.read_text()
     assert "runA_test" in md
-    assert "Images analysed: 5" in md
-    assert "No readable JPEG quality factor: 1" in md
+    assert "Images analysed: 6" in md
+    assert "No readable JPEG quality factor: 2" in md
+    # A missing file must not be reported as "just a PNG".
+    assert "not JPEG: 1, could not be opened: 1" in md
+    assert "Decision threshold: 0.42" in md   # the artefact's own cut, not 0.5
     assert "across 0 usable bins" in md
     assert "insufficient" in md
+
+
+def test_all_unopenable_images_warn_about_the_data_dir(tmp_path, capsys):
+    from analysis.confound import analyse_run
+
+    npz = tmp_path / "runB_test.npz"
+    np.savez(npz, paths=np.array(["a/x.jpg", "b/x.jpg"]),
+             labels=np.array([0, 1]), probs=np.array([0.1, 0.9]),
+             threshold=np.float64(0.5), tta=np.bool_(False))
+    r = analyse_run(str(npz), str(tmp_path / "wrong-dir"))
+
+    assert r["n_unopenable"] == 2 and r["n_not_jpeg"] == 0
+    assert "--data-dir" in capsys.readouterr().out
+
+
+def test_absolute_quality_paths_are_not_rewritten_under_data_dir():
+    from analysis.confound import _resolve
+
+    assert _resolve("/nowhere/x.jpg", "/data") == "/nowhere/x.jpg"
