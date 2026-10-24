@@ -2,7 +2,8 @@
 
 Iterates seed-by-seed so a partial sweep covers every architecture.
 Checks experiment_log.csv to skip completed combos.
-Persists ELA cache + experiment_log.csv to Drive/Kaggle between runs.
+Persists ELA cache, predictions, checkpoints and experiment_log.csv to
+Drive/Kaggle between runs.
 """
 
 import argparse
