@@ -1,7 +1,7 @@
 import torch
 import os
 
-from model_factory import build_from_checkpoint
+from model_factory import input_spec, load_model_from_checkpoint
 
 CHECKPOINT = "models/best_model.pth"
 DEVICE = "cpu"
@@ -9,14 +9,15 @@ DEVICE = "cpu"
 def export_to_onnx():
     print("Loading checkpoint...")
     ckpt = torch.load(CHECKPOINT, map_location=DEVICE, weights_only=False)
-    model = build_from_checkpoint(ckpt)
+    model = load_model_from_checkpoint(ckpt, DEVICE)
     model.eval()
     print(f"Loaded model — val F1: {ckpt['val_f1']:.4f}")
 
     os.makedirs("models", exist_ok=True)
     onnx_path = "models/imgforge.onnx"
 
-    dummy_input = torch.randn(1, 4, 224, 224)
+    channels, image_size = input_spec(ckpt.get("cfg", {}))
+    dummy_input = torch.randn(1, channels, image_size, image_size)
 
     print("Exporting to ONNX...")
     torch.onnx.export(
@@ -52,7 +53,7 @@ def export_to_onnx():
         import time
 
         session = ort.InferenceSession(onnx_path)
-        test_input = np.random.randn(1, 4, 224, 224).astype(np.float32)
+        test_input = np.random.randn(1, channels, image_size, image_size).astype(np.float32)
 
         # Warmup
         for _ in range(3):

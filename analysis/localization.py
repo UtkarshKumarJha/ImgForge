@@ -11,7 +11,7 @@ import torch
 
 from data.dataset import ForgeryDataset
 from gradcam import GradCAM, get_gradcam_target_layer
-from model_factory import build_from_checkpoint
+from model_factory import load_model_from_checkpoint
 
 DEFAULT_GRID = np.arange(0.05, 1.0, 0.05)
 MASK_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -170,9 +170,8 @@ def analyse(ckpt_path: str, data_dir: str = "data", masks_dir: str = "data/masks
     input_mode = cfg.get("input_mode", "rgb_ela")
     result["arch"], result["input_mode"] = arch, input_mode
 
-    model = build_from_checkpoint(ckpt)
+    model = load_model_from_checkpoint(ckpt)
     get_gradcam_target_layer(model, arch)   # refuses unsupported arches before any CAM work
-    model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
     dataset = _dataset(data_dir, split, cfg, input_mode)
