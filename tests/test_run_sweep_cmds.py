@@ -17,16 +17,18 @@ class A:
 
 
 def test_train_cmd_carries_every_new_flag():
-    cmd = build_train_cmd(A, "swin_tiny", "rgb_ela", 2)
+    cmd = build_train_cmd(A, "swin_tiny", "rgb_ela", 2, RUN)
     for flag, val in [("--image-size", "256"), ("--lr-new", "0.001"),
                       ("--warmup", "5"), ("--grad-clip", "1.0"),
                       ("--fusion", "dual")]:
         assert flag in cmd and cmd[cmd.index(flag) + 1] == val, flag
     assert "--seed" in cmd and cmd[cmd.index("--seed") + 1] == "2"
+    # the sweep's deviation-suffixed name is what it looks the checkpoint up by
+    assert cmd[cmd.index("--run-name") + 1] == RUN
 
 
 def test_train_cmd_leaves_backbone_lr_to_the_arch():
-    assert "--lr-backbone" not in build_train_cmd(A, "swin_tiny", "rgb_ela", 2)
+    assert "--lr-backbone" not in build_train_cmd(A, "swin_tiny", "rgb_ela", 2, RUN)
 
 
 def test_eval_cmd_enables_tta_and_json_output():
