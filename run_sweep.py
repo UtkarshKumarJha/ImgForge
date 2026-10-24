@@ -320,6 +320,9 @@ def main():
                    help="Disable test-time augmentation (on by default)")
     p.add_argument("--ela-quality", type=int, default=REFERENCE["ela_quality"])
     p.add_argument("--ela-cache-dir", default="data/ela_cache")
+    p.add_argument("--no-persist-ela-cache", action="store_true",
+                   help="Keep the ELA cache local to this session. It is ~1.2 MB per "
+                        "image, so persisting ~12k images would exceed a Kaggle output.")
     p.add_argument("--persist-dir", default=None,
                    help="Persistent storage (e.g. /content/drive/MyDrive/ImgForge)")
     p.add_argument("--wandb", action="store_true")
@@ -375,9 +378,10 @@ def main():
                 if ok:
                     done += 1
                     completed.add(run_name)
-                    persist_to_drive(args.log_path, args.ela_cache_dir,
-                                     args.persist_dir, run_name,
-                                     models_dir=args.out_dir)
+                    persist_to_drive(
+                        args.log_path,
+                        None if args.no_persist_ela_cache else args.ela_cache_dir,
+                        args.persist_dir, run_name, models_dir=args.out_dir)
                 else:
                     failed += 1
 
