@@ -36,10 +36,15 @@ SEEDS = [1, 2, 3]
 
 # The configuration the sweep reports. A run that departs from it gets the
 # deviation in its name, so a pilot arm can never masquerade as a reported run.
+# Scheduled from the measured T4 cost: EfficientNet-B0/ELA at 256 px takes ~58 s per
+# train epoch, so 60 epochs over 36 runs would need ~45 h — more than the 30 h weekly
+# GPU quota, which also has to pay for the pilot. 224 px at 30 epochs fits the whole
+# grid with slack for reruns, and the 10-epoch pilot tied 224 (0.8104 val macro-F1)
+# against 256 (0.8066).
 REFERENCE = {
-    "image_size": 256,
+    "image_size": 224,
     "fusion": "dual",
-    "num_epochs": 60,
+    "num_epochs": 30,
     "batch_size": 16,
     "lr_new": 1e-3,
     "warmup": 5,

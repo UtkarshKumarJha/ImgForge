@@ -2,7 +2,7 @@ import shutil
 
 import run_sweep
 from run_sweep import (
-    build_eval_cmd, build_train_cmd, load_completed, persist_to_drive,
+    REFERENCE, build_eval_cmd, build_train_cmd, load_completed, persist_to_drive,
     restore_from_drive, run_name_for,
 )
 
@@ -10,17 +10,19 @@ RUN = "resnet18_bilstm_rgb_ela_s1"
 
 
 class A:
-    data_dir = "data"; num_epochs = 60; batch_size = 16; num_workers = 2
-    ela_quality = 75; out_dir = "models"; wandb = False
-    image_size = 256; lr_new = 1e-3; warmup = 5
-    grad_clip = 1.0; fusion = "dual"; tta = True
+    """The declared sweep config: every field tracked from REFERENCE."""
+    data_dir = "data"; num_workers = 2; out_dir = "models"; wandb = False
+    ela_quality = REFERENCE["ela_quality"]; batch_size = REFERENCE["batch_size"]
+    image_size = REFERENCE["image_size"]; num_epochs = REFERENCE["num_epochs"]
+    lr_new = REFERENCE["lr_new"]; warmup = REFERENCE["warmup"]
+    grad_clip = REFERENCE["grad_clip"]; fusion = REFERENCE["fusion"]; tta = True
 
 
 def test_train_cmd_carries_every_new_flag():
     cmd = build_train_cmd(A, "swin_tiny", "rgb_ela", 2, RUN)
-    for flag, val in [("--image-size", "256"), ("--lr-new", "0.001"),
-                      ("--warmup", "5"), ("--grad-clip", "1.0"),
-                      ("--fusion", "dual")]:
+    for flag, val in [("--image-size", str(REFERENCE["image_size"])),
+                      ("--lr-new", "0.001"), ("--warmup", "5"),
+                      ("--grad-clip", "1.0"), ("--fusion", "dual")]:
         assert flag in cmd and cmd[cmd.index(flag) + 1] == val, flag
     assert "--seed" in cmd and cmd[cmd.index("--seed") + 1] == "2"
     # the sweep's deviation-suffixed name is what it looks the checkpoint up by
@@ -125,31 +127,31 @@ def test_run_name_has_no_suffix_for_the_reference_config():
 
 
 def test_deviating_config_changes_the_run_name():
-    class P224(A):
-        image_size = 224
+    class P256(A):
+        image_size = 256
 
     class Concat(A):
         fusion = "concat"
 
-    class Both(P224):
+    class Both(P256):
         fusion = "concat"
 
     class NoTTA(A):
         tta = False
 
-    assert run_name_for("swin_tiny", "rgb_ela", 2, P224) == "swin_tiny_rgb_ela_p224_s2"
+    assert run_name_for("swin_tiny", "rgb_ela", 2, P256) == "swin_tiny_rgb_ela_p256_s2"
     assert run_name_for("swin_tiny", "rgb_ela", 2, Concat) == "swin_tiny_rgb_ela_concat_s2"
-    assert run_name_for("swin_tiny", "rgb_ela", 2, Both) == "swin_tiny_rgb_ela_p224_concat_s2"
+    assert run_name_for("swin_tiny", "rgb_ela", 2, Both) == "swin_tiny_rgb_ela_p256_concat_s2"
     assert run_name_for("swin_tiny", "rgb_ela", 2, NoTTA) == "swin_tiny_rgb_ela_notta_s2"
 
 
 def test_deviation_keeps_seed_last_so_mcnemar_can_parse_it():
     from analysis.mcnemar import parse_run_name
 
-    class P224(A):
-        image_size = 224
+    class P256(A):
+        image_size = 256
 
-    name = run_name_for("resnet18_bilstm", "rgb_ela", 3, P224)
+    name = run_name_for("resnet18_bilstm", "rgb_ela", 3, P256)
     assert parse_run_name(name) == ("resnet18_bilstm", "rgb_ela")
     assert name.rsplit("_s", 1)[1] == "3"
 
