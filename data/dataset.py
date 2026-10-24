@@ -30,17 +30,20 @@ def get_transforms(split: str, image_size: int = 224, input_mode: str = "rgb"):
         )
         spatial = A.Compose(
             resize + [
+                A.HorizontalFlip(p=0.5),
                 A.Affine(translate_percent=0.05, scale=(0.9, 1.1), rotate=(-10, 10), p=0.4),
-                A.GridDropout(ratio=0.3, p=0.2),
             ],
             additional_targets={"ela": "image"},
         )
-        pixel = None if input_mode in ("ela", "rgb_ela") else A.Compose([
+        # GridDropout punches holes in the very regions ELA measures, so it is
+        # RGB-only (spec §2). It is geometric, so it cannot live in the pixel pass.
+        pixel = A.Compose([
+            A.GridDropout(ratio=0.3, p=0.2),
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
             A.GaussNoise(std_range=(0.02, 0.1), p=0.3),
             A.MotionBlur(blur_limit=5, p=0.2),
             A.ImageCompression(quality_range=(50, 95), p=0.5),
-        ])
+        ]) if input_mode == "rgb" else None
     else:
         spatial = A.Compose(
             [A.Resize(image_size, image_size)],
