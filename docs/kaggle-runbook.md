@@ -60,6 +60,22 @@ Family A and 6 Family B tests with Holm applied per family, and
 unreadable fixture paths instead of raising. The analysis stage therefore
 depends only on the 36 real artefacts.
 
+## Gotcha: pushing does NOT stop the running session
+
+A push creates a *new batch session*; the old one keeps training and keeps
+burning GPU quota. Two zombie sessions were found alive this way (v8, v9) and
+the account hit `Maximum batch GPU session count of 2 reached`.
+
+- `POST /api/i/kernels.KernelsService/CancelKernelSession` exists but the
+  access token is refused: `Permission 'kernelSessions.cancel' was denied`.
+  There is no cancel route in the public v1 API.
+- So: never push while a session runs. Poll `kernels/status` until
+  `complete`/`error`, then push. Cancelling has to happen in the Kaggle UI.
+- A session killed by the 12 h cap does not save its `persist/`, so a stage that
+  cannot finish inside ~11 h loses everything it trained.
+- Size every session to ~11 h of work: one architecture's nine runs at 224/60
+  is 8-10 h; Swin needs two sessions.
+
 ## Reading a run's log (Kaggle hides it until the session ends)
 
 ```bash
