@@ -150,3 +150,26 @@ elapsed, after persisting the finished ones. Pass it through the notebook's
 `ONLY` knob, e.g.
 `--only "--archs resnet18_bilstm --max-hours 9.5"`. Without it a 12 h-cap kill
 saves nothing.
+
+## Reading quota and pulling artefacts (CLI 2.2.5)
+
+Both accounts use the new-style access token, passed per call so the two never mix:
+
+```bash
+KAGGLE_API_TOKEN=$(cat ~/.kaggle/access_token) .venv/bin/kaggle quota        # account A
+KAGGLE_API_TOKEN=$(cat ~/.kaggle/team_token)   .venv/bin/kaggle quota        # account B
+```
+
+`kernels output` downloads the whole output tree, which includes the cloned repo and
+the checkpoints; `--file-pattern` keeps it small:
+
+```bash
+# predictions + log + split CSVs only (fast, enough for the tables)
+kaggle kernels output <owner>/<slug> --file-pattern "^persist/(predictions/|data/|experiment_log.csv)" -p /tmp/out -q
+# every persisted artifact (needed for the McNemar checkpoints)
+kaggle kernels output <owner>/<slug> --file-pattern "^persist/" -p /tmp/out -q
+```
+
+A kernel pushed while another session is running does **not** cancel that session, so a
+double push costs a second full session of GPU quota. Push once, then check
+`kaggle kernels status`.
