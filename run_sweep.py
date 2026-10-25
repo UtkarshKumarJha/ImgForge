@@ -12,6 +12,8 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+from itertools import product
 from pathlib import Path
 
 from tqdm import tqdm
@@ -338,6 +340,9 @@ def main():
                    choices=ARCHS)
     p.add_argument("--input-modes", nargs="+", default=INPUT_MODES,
                    choices=INPUT_MODES)
+    p.add_argument("--max-hours", type=float, default=None,
+                   help="Stop starting new runs after this many hours so a capped "
+                        "Kaggle session still finishes and saves persist/")
     p.add_argument("--skip-ela-warmup", action="store_true",
                    help="Skip ELA cache warmup (use if cache is already populated)")
     args = p.parse_args()
@@ -373,24 +378,29 @@ def main():
     print(f"Remaining: {total - already}")
 
     done, failed = 0, 0
-    for seed in args.seeds:
-        for arch in args.archs:
-            for input_mode in args.input_modes:
-                run_name = run_name_for(arch, input_mode, seed, args)
-                if run_name in completed:
-                    print(f"\nSKIP: {run_name} (already in log)")
-                    continue
+    started = time.monotonic()
+    for seed, arch, input_mode in product(args.seeds, args.archs, args.input_modes):
+        run_name = run_name_for(arch, input_mode, seed, args)
+        if run_name in completed:
+            print(f"\nSKIP: {run_name} (already in log)")
+            continue
 
-                ok = run_combo(arch, input_mode, seed, args)
-                if ok:
-                    done += 1
-                    completed.add(run_name)
-                    persist_to_drive(
-                        args.log_path,
-                        None if args.no_persist_ela_cache else args.ela_cache_dir,
-                        args.persist_dir, run_name, models_dir=args.out_dir)
-                else:
-                    failed += 1
+        elapsed_h = (time.monotonic() - started) / 3600
+        if args.max_hours and elapsed_h >= args.max_hours:
+            print(f"\nTIME BUDGET: {elapsed_h:.1f} h used >= {args.max_hours} h — "
+                  f"stopping before {run_name}; finished runs are persisted")
+            break
+
+        ok = run_combo(arch, input_mode, seed, args)
+        if ok:
+            done += 1
+            completed.add(run_name)
+            persist_to_drive(
+                args.log_path,
+                None if args.no_persist_ela_cache else args.ela_cache_dir,
+                args.persist_dir, run_name, models_dir=args.out_dir)
+        else:
+            failed += 1
 
     print(f"\n{'='*60}")
     print(f"SWEEP DONE: {done} new, {failed} failed, "

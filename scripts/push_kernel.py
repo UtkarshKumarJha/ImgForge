@@ -63,6 +63,8 @@ def main() -> None:
     token = Path(a.token_file).expanduser().read_text().strip()
     payload = {
         "slug": a.slug,
+        "title": "ImgForge metric sweep",
+        "newTitle": "ImgForge metric sweep",
         "text": patch(NB.read_text(), a.stage, a.seeds, a.img, a.only),
         "language": "python",
         "kernelType": "notebook",
