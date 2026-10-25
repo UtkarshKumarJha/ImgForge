@@ -6,6 +6,7 @@ tables, so retry runs such as `efficientnet_b0_ela_p320_s1` never leak in.
 
 import argparse
 import csv
+import math
 import statistics
 from pathlib import Path
 
@@ -65,6 +66,33 @@ def table(arch, grouped):
     return lines
 
 
+def ci_cell(row):
+    """The log stores `f1_macro_ci` as the "[lo, hi]" string evaluate.py printed."""
+    parts = [p.strip() for p in (row.get("f1_macro_ci") or "").strip("[]").split(",")]
+    if len(parts) != 2:
+        return "—"
+    try:
+        lo, hi = float(parts[0]), float(parts[1])
+    except ValueError:
+        return "—"
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        return "—"
+    return f"{lo:.3f}-{hi:.3f}"
+
+
+def per_seed(arch, grouped):
+    """Each seed's reported number with its own 95% bootstrap CI, so spread is visible."""
+    lines = [f"### {arch} - per seed (val-tuned threshold, TTA on)", "",
+             "| Input mode | Seed | macro-F1 | 95% bootstrap CI |",
+             "|---|---:|---:|---|"]
+    for mode in MODES:
+        rows = sorted(grouped.get((arch, mode)) or [], key=lambda r: int(r["seed"]))
+        for row in rows:
+            lines.append(f"| {mode} | {row['seed']} | "
+                         f"{float(row['f1_macro_tuned']):.4f} | {ci_cell(row)} |")
+    return lines
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--log", nargs="+", required=True,
@@ -88,6 +116,7 @@ def main():
                  "no-TTA are shown for comparison.", "",
                  f"Measured on the held-out test split: {SPLIT}.", ""]
         lines += table(arch, grouped)
+        lines += [""] + per_seed(arch, grouped)
 
         retry_rows = [r for r in retry
                       if r["arch"] == arch and r["run_name"] != f"{arch}_{r['input_mode']}_s{r['seed']}"]
