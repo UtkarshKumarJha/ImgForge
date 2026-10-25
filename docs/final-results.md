@@ -53,6 +53,11 @@ next to the 0.90 gap, and it is not what the frozen protocol reports (single run
 The ensemble threshold is the mean of the member runs' val-tuned thresholds — no test-set
 tuning anywhere.
 
+The decision rule hardly changes the verdict. Averaged over seeds, tuned+TTA vs plain
+argmax-0.5 differs by ≤ 0.02 for every architecture/mode except Swin (`ela` 0.8364 tuned vs
+0.8561 argmax; `rgb_ela` the other way, 0.8152 vs 0.7891). The largest swing, 0.03, is smaller
+than every gap that decides a goal, so the misses are not artefacts of threshold choice.
+
 ## 3. Goal verdicts
 
 | # | Goal | Verdict | Evidence |
