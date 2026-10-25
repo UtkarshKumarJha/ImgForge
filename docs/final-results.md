@@ -4,8 +4,8 @@ Everything below is generated from artefacts, not from memory: the per-run log, 
 `predictions/*.npz`, the checkpoint `val_f1` values, and the two analysis CLIs in
 `analysis/`. Tables live in `docs/results/`.
 
-Status: **EffNet-B0 and MLP complete; ResNet-18+BiLSTM and Swin-Tiny sessions still running**
-(land ~19:00 UTC on 25 Oct). Sections that depend on the two remaining architectures are marked
+Status: **all four architectures have results.** Still in flight: Swin seed 3 (needed for the
+McNemar grid) and the `concat`-vs-`dual` ablation. Sections that depend on those are marked
 `PENDING`.
 
 ## 1. Protocol (frozen before any run)
@@ -33,8 +33,8 @@ same fingerprint, so runs from different sessions are directly comparable.
 |---|---|---:|---:|
 | EfficientNet-B0 | `ela` | 0.8376 ± 0.0169 | 0.8506 [0.827, 0.874] |
 | EfficientNet-B0, 320 px retry | `ela` | **0.8667 ± 0.0017** | 0.8680 [0.846, 0.889] |
-| ResNet-18 + BiLSTM | — | PENDING | — |
-| Swin-Tiny | — | PENDING | — |
+| ResNet-18 + BiLSTM | `ela` | 0.8242 ± 0.0151 | 0.8332 [0.809, 0.856] |
+| Swin-Tiny | `ela` | 0.8364 (2 seeds; seed 3 in flight) | 0.8390 [0.815, 0.862] |
 | MLP (deliberate lower bound) | `rgb` | 0.6128 ± 0.0020 | 0.6151 [0.585, 0.643] |
 
 Seed ensembles, computed offline from the stored probabilities (no extra training):
@@ -43,6 +43,12 @@ Seed ensembles, computed offline from the stored probabilities (no extra trainin
 |---|---:|---:|---:|
 | EffNet-B0 `ela` @ 224, 3 seeds | 0.477 | 0.8488 | — |
 | EffNet-B0 `ela` @ 320, 3 seeds | 0.400 | **0.8793** | 0.901 |
+| ResNet-18 + BiLSTM `ela`, 3 seeds | 0.473 | 0.8472 | 0.878 |
+| ResNet-18 + BiLSTM `rgb_ela`, 3 seeds | 0.420 | 0.7458 | 0.788 |
+| ResNet-18 + BiLSTM `rgb`, 3 seeds | 0.540 | 0.6808 | 0.732 |
+
+A three-seed ensemble buys ~0.02 macro-F1 for both CNNs on their best stream — real but small
+next to the 0.90 gap, and it is not what the frozen protocol reports (single runs are).
 
 The ensemble threshold is the mean of the member runs' val-tuned thresholds — no test-set
 tuning anywhere.
@@ -51,10 +57,10 @@ tuning anywhere.
 
 | # | Goal | Verdict | Evidence |
 |---|---|---|---|
-| G1 | Swin ≥ 0.80, no collapse | PENDING | — |
-| G2 | `rgb_ela` ≥ `ela` in ≥ 2/3 seeds per CNN | **MISS** | EffNet: `ela` beats `rgb_ela` in 3/3 seeds by 0.11; ResNet PENDING |
+| G1 | Swin ≥ 0.80, no collapse | **MET** (seed 3 pending) | 0.8390 / 0.8338, no degenerate run; interim collapse (0.547) gone |
+| G2 | `rgb_ela` ≥ `ela` in ≥ 2/3 seeds per CNN | **MISS** | `ela` wins in 3/3 EffNet seeds (by 0.111), 3/3 ResNet seeds (by 0.083), and 2/2 Swin seeds so far |
 | G3 | EffNet ≥ 0.90 | **MISS** | 0.8376 at 224; 0.8667 at the 320 px retry; 0.8793 ensemble |
-| G4 | ResNet ≥ 0.88 | PENDING | — |
+| G4 | ResNet ≥ 0.88 | **MISS** | 0.8242 ± 0.0151 (best mode `ela`); interim 0.774 → +0.050, still 0.056 short |
 | G5 | Predictions persisted, in a Kaggle Dataset | **MET** (A) | `predictions/*.npz` for every run; `utkarshkumarjha/imgforge-casia-predictions` (private) |
 | G6 | Confound measured, not asserted | **MET** | quality test p = 7.6e-43 **and** a format-stratified F1 drop measured for all three inputs |
 | G7 | McNemar + Holm, two families, bootstrap CIs | PENDING | per-seed 95% bootstrap CIs already in `docs/results/*.md`; McNemar needs the complete grid |
@@ -77,10 +83,32 @@ This is the single documented deviation from the frozen protocol: one retry, Eff
 
 ### 4.2 Dual-stream fusion did not deliver the `rgb_ela` gain the design expected
 
-`rgb_ela` lost to `ela` in 3/3 EffNet seeds (0.7264 ± 0.0109 vs 0.8376 ± 0.0169) and did not
-beat the RGB-only stream by a meaningful margin either. G2 is a miss. The 320 px retry was
-not extended to `rgb_ela`, so this is a 224 px result. PENDING: the `concat`-vs-`dual` arm
-(3 seeds of EffNet `rgb_ela`, running) says whether the fusion *mode* explains it.
+| Architecture | `rgb` | `ela` | `rgb_ela` | `ela` − `rgb_ela` |
+|---|---:|---:|---:|---:|
+| EfficientNet-B0 | 0.6709 | **0.8376** | 0.7264 | +0.111 |
+| ResNet-18 + BiLSTM | 0.6662 | **0.8242** | 0.7415 | +0.083 |
+| Swin-Tiny (2 seeds) | 0.7437 | **0.8364** | 0.8152 | +0.021 |
+| MLP (fusion inert) | **0.6128** | 0.4910 | 0.5995 | — |
+
+`rgb_ela` never beat `ela`: the G2 claim fails in 3/3 seeds for both CNNs and 2/2 so far for
+Swin. Two things in this table are worth the report's attention rather than a shrugged miss.
+
+First, the gap is four times smaller for the transformer (0.021) than for the CNNs (0.083–0.111).
+That is the signature you would expect if the fusion *mechanism* is the problem: Swin mixes the
+four input channels through token projection and attention, while the CNNs use the design's
+`DualStem`, which **sums a pretrained RGB conv with a freshly initialised 1-channel aux conv**
+(`model_factory.DualStem`, no scale or gate between them). At initialisation that sum is the
+pretrained filter response plus random noise of comparable magnitude, and 60 epochs on 9.4k
+images may not be enough to recover from it. This is a hypothesis, not a measured cause; the
+`concat` arm running now is the first test of it, and it was not part of the frozen protocol.
+
+Second, `ela` is the *worst* mode for the MLP (0.491) and the *best* mode for all three
+convolutional/attention models. ELA is an edge-detector-like residual map: it needs spatial
+filters to be useful, and it is the single most informative thing about this dataset. That is
+consistent with §4.3's confound finding — ELA encodes both manipulation traces and lossless-vs-JPEG
+history, and nothing in the grid separates the two.
+
+The 320 px retry was not extended to `rgb_ela`, so every row here is 224 px.
 
 ### 4.3 The dominant confound is file format, not JPEG quality (G6)
 
