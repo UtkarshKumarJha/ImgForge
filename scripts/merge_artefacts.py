@@ -42,6 +42,11 @@ def merge(sources, out_dir: str, keep_retries: bool = False) -> dict:
     rows, seen = [], set()
     for src in sources:
         src = _persist_dir(src)
+        # A typo'd or not-yet-downloaded source used to merge silently as zero runs, which is
+        # how an incomplete grid can reach McNemar looking complete.
+        if not os.path.isdir(os.path.join(src, "predictions")) and \
+                not os.path.isfile(os.path.join(src, "experiment_log.csv")):
+            raise FileNotFoundError(f"no persist/ artefacts under {src!r}")
         for sub in ("models", "predictions"):
             for name in sorted(os.listdir(os.path.join(src, sub))
                                if os.path.isdir(os.path.join(src, sub)) else []):
