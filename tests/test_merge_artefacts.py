@@ -1,5 +1,7 @@
 import csv
 
+import pytest
+
 from scripts.merge_artefacts import merge
 
 
@@ -34,6 +36,13 @@ def test_merge_dedupes_files_and_excludes_retry_runs(tmp_path):
     rows = list(csv.DictReader(open(out / "experiment_log.csv")))
     assert [r["run_name"] for r in rows] == [
         "efficientnet_b0_ela_s1", "resnet18_bilstm_rgb_s2"]
+
+
+def test_missing_source_is_an_error_not_a_silent_skip(tmp_path):
+    # A bad --src path used to merge as zero runs; the grid then looked complete anyway.
+    out = tmp_path / "out"
+    with pytest.raises(FileNotFoundError):
+        merge([str(tmp_path / "typo")], str(out))
 
 
 def test_retries_can_be_kept_for_their_own_section(tmp_path):
