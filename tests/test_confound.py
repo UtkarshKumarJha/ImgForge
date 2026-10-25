@@ -47,6 +47,18 @@ def test_skipped_bins_do_not_enter_the_bin_macro_average():
     assert r["macro_f1"] == r["bins"][0]["f1"]
 
 
+def test_jpeg_subset_f1_drops_non_jpeg_images():
+    from analysis.confound import jpeg_subset_f1
+
+    y = np.array([0, 0, 1, 1, 0, 1])
+    p = np.array([0, 0, 1, 1, 1, 0])          # the last two are wrong
+    kinds = ["jpeg", "jpeg", "jpeg", "jpeg", "not_jpeg", "unopenable"]
+    r = jpeg_subset_f1(y, p, kinds, min_per_class=1)
+
+    assert r["n"] == 4 and r["n_authentic"] == 2 and r["n_tampered"] == 2
+    assert r["f1"] == 1.0                       # TIFF and unopenable images are excluded
+
+
 def test_cli_writes_markdown_and_counts_unreadable_quality(tmp_path):
     imgs = []
     for i, (quality, label) in enumerate([(90, 0), (90, 0), (40, 1), (40, 1)]):

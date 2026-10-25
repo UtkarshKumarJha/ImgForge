@@ -68,6 +68,22 @@ def stratified_f1(y_true, y_pred, qf, min_per_class: int = 20) -> dict:
     }
 
 
+def jpeg_subset_f1(y_true, y_pred, kinds, min_per_class: int = 20) -> dict:
+    """Macro-F1 on JPEG images only: the slice a format shortcut cannot separate."""
+    keep = np.array([kind == "jpeg" for kind in kinds])
+    yt = np.asarray(y_true).astype(int)[keep]
+    yp = np.asarray(y_pred).astype(int)[keep]
+    n_ok = int((yt == 0).sum())
+    n_tampered = int((yt == 1).sum())
+    scored = n_ok >= min_per_class and n_tampered >= min_per_class
+    return {
+        "n": int(len(yt)),
+        "n_authentic": n_ok,
+        "n_tampered": n_tampered,
+        "f1": float(f1_score(yt, yp, average="macro", zero_division=0)) if scored else None,
+    }
+
+
 def _resolve(path: str, data_dir: str) -> str:
     """Absolute paths are used as given; relative ones fall back under data_dir."""
     if os.path.isabs(path):
@@ -125,6 +141,8 @@ def analyse_run(npz_path: str, data_dir: str = "data", threshold: float | None =
         "n_not_jpeg": n_not_jpeg,
         "mw": mw,
         "strat": stratified_f1(labels, preds, qf, min_per_class=min_per_class),
+        "jpeg": jpeg_subset_f1(labels, preds, [k for k, _ in kinds],
+                               min_per_class=min_per_class),
     }
 
 
@@ -144,6 +162,9 @@ def render_markdown(results, min_per_class: int = 20) -> str:
         "Quality factors are read from the JPEG quantization tables. Images without one "
         "(BMP/TIFF) and images that could not be opened are excluded from both tests, "
         "never coerced to 0, and counted separately below.",
+        "Macro-F1 restricted to JPEG images is reported too: when one class is mostly "
+        "JPEG and the other mostly TIFF/BMP, the full-split score can reward file format "
+        "rather than forgery evidence.",
         "",
     ]
     for r in results:
@@ -176,6 +197,10 @@ def render_markdown(results, min_per_class: int = 20) -> str:
             f"Macro-F1 across {st['usable_bins']} usable bins: "
             f"{_fmt(st['macro_f1'], '.4f')}.",
             "",
+            f"Macro-F1 on the JPEG-only slice (n={r['jpeg']['n']}: "
+            f"{r['jpeg']['n_authentic']} authentic, {r['jpeg']['n_tampered']} tampered): "
+            f"{_fmt(r['jpeg']['f1'], '.4f')}.",
+            "",
         ]
     return "\n".join(lines)
 
@@ -204,6 +229,9 @@ def main():
               f"no_quality={r['n_no_quality']} (not_jpeg={r['n_not_jpeg']}, "
               f"unopenable={r['n_unopenable']})  "
               f"usable_bins={st['usable_bins']}  insufficient_bins={st['insufficient_bins']}")
+        print(f"  jpeg-only macro-F1={_fmt(r['jpeg']['f1'], '.4f')} "
+              f"(n={r['jpeg']['n']}: {r['jpeg']['n_authentic']} authentic, "
+              f"{r['jpeg']['n_tampered']} tampered)")
         for b in st["bins"]:
             f1 = "insufficient" if b["f1"] is None else f"{b['f1']:.4f}"
             print(f"  [{b['lo']:>3}-{b['hi'] - 1:>3}] authentic={b['n_ok']:>4} "
