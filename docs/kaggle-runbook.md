@@ -173,3 +173,41 @@ kaggle kernels output <owner>/<slug> --file-pattern "^persist/" -p /tmp/out -q
 A kernel pushed while another session is running does **not** cancel that session, so a
 double push costs a second full session of GPU quota. Push once, then check
 `kaggle kernels status`.
+
+## Final assembly: from the three sessions to the report tables
+
+```bash
+# 1. one analysis directory, retries/ablations (`_p320`, `_concat`) left out on purpose
+python scripts/merge_artefacts.py \
+  --src /tmp/outA/persist --src /tmp/outB1/persist --src /tmp/outB2/persist \
+  --out /tmp/merged
+
+# 2. the per-architecture tables (best mode, per-seed CIs, documented retry section)
+python scripts/report_tables.py --log /tmp/merged/experiment_log.csv \
+  --retry-log /tmp/outA_retry/persist/experiment_log.csv --out-dir docs/results
+
+# 3. McNemar (two families, Holm within each) needs the complete arch x mode x seed grid
+python -m analysis.mcnemar --predictions /tmp/merged/predictions/*_test.npz \
+  --models-dir /tmp/merged/models --out docs/results/mcnemar.md
+
+# 4. the confound analysis needs the JPEG quality tables, so it needs the images.
+#    The npz stores Kaggle-absolute paths; rewrite them to the local CASIA root first
+#    (see scripts/../analysis/confound.py `_resolve`: relative paths join under --data-dir,
+#    absolute ones are used as given).
+python -m analysis.confound --predictions /tmp/local/pred/*_test.npz \
+  --data-dir <casia>/CASIA2 --out docs/results/confound.md
+
+# 5. localization: masks staged with the `_gt` suffix stripped (stems must match exactly)
+python -m analysis.localization --ckpt /tmp/merged/models/efficientnet_b0_ela_s3_best.pth \
+  --data-dir /tmp/local/data --masks-dir /tmp/local/masks \
+  --split test --out docs/results/localization.md
+```
+
+Publishing the predictions (G5) is a plain dataset upload from the merged directory plus
+`dataset-metadata.json`; re-run `kaggle datasets version -p <dir> -m "<what changed>"` when
+new runs land:
+
+```bash
+KAGGLE_API_TOKEN=$(cat ~/.kaggle/access_token) \
+  kaggle datasets create -p /tmp/ds --dir-mode zip        # first time (private by default)
+```
