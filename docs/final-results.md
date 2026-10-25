@@ -55,10 +55,11 @@ not what the frozen protocol reports (single runs are).
 The ensemble threshold is the mean of the member runs' val-tuned thresholds — no test-set
 tuning anywhere.
 
-The decision rule hardly changes the verdict. Averaged over seeds, tuned+TTA vs plain
-argmax-0.5 differs by ≤ 0.02 for every architecture/mode except Swin (`ela` 0.8364 tuned vs
-0.8561 argmax; `rgb_ela` the other way, 0.8152 vs 0.7891). The largest swing, 0.03, is smaller
-than every gap that decides a goal, so the misses are not artefacts of threshold choice.
+The decision rule hardly changes the verdict. Averaged over seeds, tuned+TTA vs plain argmax-0.5
+differs by ≤ 0.018 in all nine convolutional/attention cells (largest: Swin `rgb_ela`, 0.7992 vs
+0.7817). The only larger swing is MLP `ela` (0.4910 vs 0.4478, 0.043), which is the degenerate
+cell. Nothing here is near the 0.056–0.062 gaps that decide G3/G4, so the misses are not
+artefacts of threshold choice.
 
 ## 3. Goal verdicts
 
@@ -68,7 +69,7 @@ than every gap that decides a goal, so the misses are not artefacts of threshold
 | G2 | `rgb_ela` ≥ `ela` in ≥ 2/3 seeds per CNN | **MISS** | `ela` wins 9/9 seeds across all three architectures (EffNet by 0.111, ResNet 0.083, Swin 0.045) |
 | G3 | EffNet ≥ 0.90 | **MISS** | 0.8376 at 224; 0.8667 at the 320 px retry; 0.8793 ensemble |
 | G4 | ResNet ≥ 0.88 | **MISS** | 0.8242 ± 0.0151 (best mode `ela`); interim 0.774 → +0.050, still 0.056 short |
-| G5 | Predictions persisted, in a Kaggle Dataset | **MET** | `predictions/*.npz` for all 36 runs + 3 retry/ablation runs; `utkarshkumarjha/imgforge-casia-predictions` (private) |
+| G5 | Predictions persisted, in a Kaggle Dataset | **MET** | `predictions/*.npz` for all 45 runs (36 grid + 3 `_p320` + 6 `_concat`); `utkarshkumarjha/imgforge-casia-predictions` (private, status `ready`) |
 | G6 | Confound measured, not asserted | **MET** | quality test p = 7.6e-43 **and** a format-stratified F1 drop measured for all three inputs and all three architectures |
 | G7 | McNemar + Holm, two families, bootstrap CIs | **MET** | 12 within-architecture + 6 cross-architecture tests, Holm per family; per-seed 95% bootstrap CIs in `docs/results/*.md` |
 | G8 | Localization described or downgraded | **MET (measured)** | mean IoU 0.114 / Dice 0.177 on 295/303 masked tampered images, with the CAM-resolution caveat |
