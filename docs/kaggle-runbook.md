@@ -60,6 +60,20 @@ Family A and 6 Family B tests with Holm applied per family, and
 unreadable fixture paths instead of raising. The analysis stage therefore
 depends only on the 36 real artefacts.
 
+## State at 2026-10-25 05:20 UTC (laptop shut down from here)
+
+- **v11 is running**: `sweep`, `--archs efficientnet_b0 mlp`, seeds 1 2 3, 224 px /
+  60 epochs, timeout 43200 s. Started 05:15 UTC, expected to complete ~13:00 UTC.
+  It mounts v10's output, so the split restores instead of rebuilding.
+- Quota: 67,894 s used of 108,000 → **11.1 h left on this account**.
+- Nothing local is required for it to finish; the session runs on Kaggle and its
+  output (including `persist/`) is committed when the notebook ends.
+- After it completes the GPU idles until someone pushes again. Do not push while
+  v11 runs — poll `kernels/status` until `complete` first.
+- Still missing: the second account (username + token at `~/.kaggle/team_token`).
+  It must carry `resnet18_bilstm` (≈10 h) and `swin_tiny` (≈15-22 h, two
+  sessions). This account cannot: after v11 it has ≈3 h left.
+
 ## Gotcha: pushing does NOT stop the running session
 
 A push creates a *new batch session*; the old one keeps training and keeps
