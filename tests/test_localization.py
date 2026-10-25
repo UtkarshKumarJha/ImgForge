@@ -229,6 +229,11 @@ def test_analyse_takes_the_threshold_from_val_and_scores_the_test_split(tmp_path
     assert result["mean_iou"] == pytest.approx(expected_iou)
     assert result["mean_dice"] == pytest.approx(expected_dice)
     assert 0.0 < result["mean_iou"] < 1.0
+    # Area reference points: an all-forged mask would score exactly mean_mask_area.
+    assert result["mean_pred_area"] == pytest.approx(
+        np.mean([(cams224[p] >= 0.9).mean() for p in (t1, t2)]))
+    assert result["mean_mask_area"] == pytest.approx(
+        np.mean([(cams224[p] >= 0.2).mean() for p in (t1, t2)]))
 
     md = render_markdown(result)
     assert "Validation calibration" in md

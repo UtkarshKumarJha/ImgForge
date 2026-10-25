@@ -202,11 +202,16 @@ def analyse(ckpt_path: str, data_dir: str = "data", masks_dir: str = "data/masks
                             "empty or unreadable, or its image cannot be opened")
         return result
 
-    scores = [iou_dice(cam_to_mask(_resize_cam(cam, gt.shape), threshold), gt)
+    scored = [(cam_to_mask(_resize_cam(cam, gt.shape), threshold), gt)
               for cam, gt in zip(cams, gts)]
+    scores = [iou_dice(pred, gt) for pred, gt in scored]
     result["n_scored"] = len(scores)
     result["mean_iou"] = float(np.mean([s[0] for s in scores]))
     result["mean_dice"] = float(np.mean([s[1] for s in scores]))
+    # Reference points, so a reader can tell skill from a mask that covers everything.
+    # An all-forged constant mask scores exactly the mean mask area as IoU.
+    result["mean_mask_area"] = float(np.mean([gt.mean() for _, gt in scored]))
+    result["mean_pred_area"] = float(np.mean([pred.mean() for pred, _ in scored]))
     return result
 
 
@@ -273,6 +278,8 @@ def render_markdown(result: dict) -> str:
         f"| Images scored | {result['n_scored']} |",
         f"| Mean IoU | {result['mean_iou']:.4f} |",
         f"| Mean Dice | {result['mean_dice']:.4f} |",
+        f"| Mean mask area (fraction of pixels) | {result['mean_mask_area']:.3f} |",
+        f"| Mean predicted area (fraction of pixels) | {result['mean_pred_area']:.3f} |",
         "",
         f"Skipped: {result['n_tampered'] - result['n_matched']} tampered images without a "
         f"mask, {result['n_skipped_empty']} masks with no forgery pixels, "
