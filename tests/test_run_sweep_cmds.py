@@ -220,3 +220,21 @@ def test_restore_brings_back_checkpoints_without_clobbering_local_ones(tmp_path)
 
     assert (models / "a_best.pth").read_bytes() == b"local"    # local is newer
     assert (models / "b_best.pth").read_bytes() == b"drive"
+
+
+def test_max_hours_stops_before_starting_another_run(tmp_path, monkeypatch):
+    """A capped Kaggle session must stop cleanly instead of being killed mid-run."""
+    calls = []
+    monkeypatch.setattr(run_sweep, "run_combo", lambda *a, **k: calls.append(a) or True)
+    for name in ("restore_from_drive", "warmup_ela_cache", "persist_to_drive"):
+        monkeypatch.setattr(run_sweep, name, lambda *a, **k: None)
+    monkeypatch.setattr(run_sweep, "load_completed", lambda *a, **k: set())
+    clock = iter([0.0, 7200.0])  # start, then two hours later
+    monkeypatch.setattr(run_sweep.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr("sys.argv", [
+        "run_sweep.py", "--max-hours", "1", "--archs", "mlp", "--input-modes", "rgb",
+        "--seeds", "1", "--skip-ela-warmup",
+        "--results-dir", str(tmp_path / "results"), "--out-dir", str(tmp_path / "models"),
+    ])
+    run_sweep.main()
+    assert calls == []
