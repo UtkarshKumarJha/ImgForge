@@ -120,3 +120,33 @@ The output endpoint returns an empty log while a session is still running, and
   checkpoint.
 - Budget: quota refreshes 2026-10-31, i.e. **after** the submission deadline, so
   there is no second allotment to fall back on.
+
+## Second account (teammate `mayurrdas`) — read this before pushing there
+
+- The token is in the main checkout's `.env` as `MAYUR_TOKEN`, mirrored to
+  `~/.kaggle/team_token` (chmod 600). Its owner is **`mayurrdas`** (double r);
+  `mayurdas24` does not exist.
+- The API derives a **new** kernel's slug from the `title` and ignores the
+  owner prefix in `--slug`; on an existing kernel the slug must match exactly or
+  the push is treated as a create and 409s on the duplicate title.
+- `datasetDataSources` is **silently dropped** for kernels on this account
+  (`invalidDatasetSources: []`, `SystemExit: CASIA2 not found`, v1-v3 all failed
+  this way). The notebook now falls back to
+  `kagglehub.dataset_download("divg07/casia-20-image-tampering-detection-dataset")`
+  when `/kaggle/input` has no `CASIA2`, so the attach is optional. Paths stay
+  stable because `prepare_dataset` runs against the
+  `/kaggle/working/casia_link/CASIA2.0_revised` symlink, so the split
+  fingerprint is unchanged.
+- Self-source (`kernel_sources: [own kernel]`) is rejected with
+  `invalidKernelSources` while the kernel has no completed version with output;
+  it starts working once a run has saved `persist/`.
+- This token cannot read `kernels/output` for another owner (`users.get`
+  denied) — always query with the matching token.
+
+## Session time budget
+
+`run_sweep.py --max-hours H` stops *starting* new runs once H hours have
+elapsed, after persisting the finished ones. Pass it through the notebook's
+`ONLY` knob, e.g.
+`--only "--archs resnet18_bilstm --max-hours 9.5"`. Without it a 12 h-cap kill
+saves nothing.
