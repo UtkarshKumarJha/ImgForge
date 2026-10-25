@@ -61,10 +61,12 @@ def main() -> None:
     a = p.parse_args()
 
     token = Path(a.token_file).expanduser().read_text().strip()
+    # Kaggle derives a new kernel's slug from the title, so keep the title tied to the slug
+    title = a.slug.split("/")[-1].replace("-", " ")
     payload = {
         "slug": a.slug,
-        "title": "ImgForge metric sweep",
-        "newTitle": "ImgForge metric sweep",
+        "title": title,
+        "newTitle": title,
         "text": patch(NB.read_text(), a.stage, a.seeds, a.img, a.only),
         "language": "python",
         "kernelType": "notebook",
