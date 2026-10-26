@@ -35,13 +35,14 @@ def read_jpeg_quality(image_path: str) -> int | None:
         return None
 
 
-def compute_ela(image_path: str, quality: int = 75, amplify: int = 10) -> np.ndarray:
+def compute_ela(image_path: str, quality: int = 75, amplify: int = 10,
+                use_cache: bool = True) -> np.ndarray:
     """Compute Error Level Analysis map for an image.
 
     Returns: ELA map as float32 array, shape (H, W, 3), values in [0, 1].
-    Caches to disk as uint8 when IMGFORGE_ELA_CACHE env var is set.
+    Caches to disk as uint8 when IMGFORGE_ELA_CACHE env var is set and use_cache is True.
     """
-    cp = _ela_cache_path(image_path, quality)
+    cp = _ela_cache_path(image_path, quality) if use_cache else None
     if cp and os.path.exists(cp):
         try:
             return np.load(cp).astype(np.float32) / 255.0

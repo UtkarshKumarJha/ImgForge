@@ -47,7 +47,7 @@ def patch(nb_text: str, stage: str, seeds: str, img: str, only: str) -> str:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", required=True, choices=["s0", "pilot", "sweep", "analysis"])
+    p.add_argument("--stage", required=True, choices=["s0", "pilot", "sweep", "analysis", "final"])
     p.add_argument("--seeds", default="1")
     p.add_argument("--img", default="")
     p.add_argument("--only", default="", help="extra sweep flags, e.g. \"--archs swin_tiny\"")
