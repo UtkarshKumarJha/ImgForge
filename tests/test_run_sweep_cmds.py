@@ -238,3 +238,27 @@ def test_max_hours_stops_before_starting_another_run(tmp_path, monkeypatch):
     ])
     run_sweep.main()
     assert calls == []
+
+
+def test_gpus_run_concurrently_on_distinct_devices_and_sizes_get_suffixed(tmp_path, monkeypatch):
+    import threading
+    calls, barrier = [], threading.Barrier(2, timeout=10)
+
+    def fake_run_combo(arch, mode, seed, args, gpu=None, lock=None):
+        barrier.wait()  # both GPUs must be busy at the same time
+        calls.append((run_name_for(arch, mode, seed, args), gpu))
+        return True
+
+    monkeypatch.setattr(run_sweep, "run_combo", fake_run_combo)
+    for name in ("restore_from_drive", "warmup_ela_cache", "persist_to_drive"):
+        monkeypatch.setattr(run_sweep, name, lambda *a, **k: None)
+    monkeypatch.setattr(run_sweep, "load_completed", lambda *a, **k: set())
+    monkeypatch.setattr("sys.argv", [
+        "run_sweep.py", "--archs", "efficientnet_b0", "--input-modes", "ela",
+        "--seeds", "1", "--image-size", "320", "384", "--gpus", "2", "--skip-ela-warmup",
+        "--results-dir", str(tmp_path / "results"), "--out-dir", str(tmp_path / "models"),
+    ])
+    run_sweep.main()
+    assert sorted(name for name, _ in calls) == ["efficientnet_b0_ela_p320_s1",
+                                                 "efficientnet_b0_ela_p384_s1"]
+    assert {gpu for _, gpu in calls} == {0, 1}

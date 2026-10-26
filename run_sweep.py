@@ -3,16 +3,20 @@
 Iterates seed-by-seed so a partial sweep covers every architecture.
 Checks experiment_log.csv to skip completed combos.
 Persists ELA cache, predictions, checkpoints and experiment_log.csv to
-Drive/Kaggle between runs.
+Drive/Kaggle between runs. `--gpus N` trains N combos at once, one per GPU.
 """
 
 import argparse
+import contextlib
 import csv
 import os
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from itertools import product
 from pathlib import Path
 
@@ -257,13 +261,25 @@ def build_eval_cmd(args, ckpt_path: str, json_path: str) -> list[str]:
     return cmd
 
 
-def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
+def run_combo(arch: str, input_mode: str, seed: int, args, gpu: int | None = None,
+              lock=None) -> bool:
+    """Train, evaluate and log one combo. With `gpu` set the subprocesses are pinned
+    to that device and write to results/logs/<run>.log instead of stdout."""
     run_name = run_name_for(arch, input_mode, seed, args)
     ckpt_path = os.path.join(args.out_dir, f"{run_name}_best.pth")
     json_path = os.path.join(args.results_dir, f"{run_name}.json")
+    run_log = os.path.join(args.results_dir, "logs", f"{run_name}.log")
+
+    def run(cmd) -> subprocess.CompletedProcess:
+        if gpu is None:
+            return subprocess.run(cmd)
+        os.makedirs(os.path.dirname(run_log), exist_ok=True)
+        with open(run_log, "a") as f:
+            return subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT,
+                                  env={**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu)})
 
     print(f"\n{'='*60}")
-    print(f"TRAIN: {run_name}")
+    print(f"TRAIN: {run_name}" + ("" if gpu is None else f" on GPU {gpu} (log: {run_log})"))
     print(f"{'='*60}")
     free = _disk_report("before training")
     if free < 0.5:
@@ -272,7 +288,7 @@ def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
 
     train_cmd = build_train_cmd(args, arch, input_mode, seed, run_name)
 
-    ret = subprocess.run(train_cmd)
+    ret = run(train_cmd)
     if ret.returncode != 0:
         print(f"FAILED: train.py returned {ret.returncode}")
         corrupt = ckpt_path
@@ -288,7 +304,7 @@ def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
     eval_cmd = build_eval_cmd(args, ckpt_path, json_path)
 
     print(f"\nEVALUATE: {run_name}")
-    ret = subprocess.run(eval_cmd)
+    ret = run(eval_cmd)
     if ret.returncode != 0:
         print(f"FAILED: evaluate.py returned {ret.returncode}")
         return False
@@ -299,7 +315,8 @@ def run_combo(arch: str, input_mode: str, seed: int, args) -> bool:
     ]
 
     print(f"\nLOG: {run_name}")
-    ret = subprocess.run(log_cmd)
+    with lock or contextlib.nullcontext():  # concurrent runs share one log file
+        ret = run(log_cmd)
     if ret.returncode != 0:
         print(f"FAILED: experiment_log.py returned {ret.returncode}")
         return False
@@ -320,7 +337,8 @@ def main():
     p.add_argument("--num-epochs", type=int, default=REFERENCE["num_epochs"])
     p.add_argument("--batch-size", type=int, default=REFERENCE["batch_size"])
     p.add_argument("--num-workers", type=int, default=2)
-    p.add_argument("--image-size", type=int, default=REFERENCE["image_size"])
+    p.add_argument("--image-size", type=int, nargs="+", default=[REFERENCE["image_size"]],
+                   help="One or more input sizes; each is a separate (suffixed) run")
     p.add_argument("--lr-new", type=float, default=REFERENCE["lr_new"])
     p.add_argument("--warmup", type=int, default=REFERENCE["warmup"])
     p.add_argument("--grad-clip", type=float, default=REFERENCE["grad_clip"])
@@ -345,6 +363,11 @@ def main():
                         "Kaggle session still finishes and saves persist/")
     p.add_argument("--skip-ela-warmup", action="store_true",
                    help="Skip ELA cache warmup (use if cache is already populated)")
+    p.add_argument("--array-cache-dir", default=None,
+                   help="Build pre-resized RGB/ELA arrays here once and train from them "
+                        "(replaces the per-image ELA cache)")
+    p.add_argument("--gpus", type=int, default=1,
+                   help="Train this many combos concurrently, one per GPU")
     args = p.parse_args()
 
     if args.num_epochs > REFERENCE["num_epochs"]:
@@ -354,7 +377,10 @@ def main():
     os.makedirs(args.results_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
 
-    if args.ela_cache_dir:
+    if args.array_cache_dir:
+        from data.dataset import ARRAY_CACHE_ENV, build_array_cache
+        os.environ[ARRAY_CACHE_ENV] = args.array_cache_dir
+    elif args.ela_cache_dir:
         os.environ["IMGFORGE_ELA_CACHE"] = args.ela_cache_dir
 
     if not args.persist_dir:
@@ -365,42 +391,72 @@ def main():
                        args.out_dir)
 
     needs_ela = any(m in ("ela", "rgb_ela") for m in args.input_modes)
-    if needs_ela and args.ela_cache_dir and not args.skip_ela_warmup:
+    if args.array_cache_dir:
+        for size in args.image_size:
+            build_array_cache(args.data_dir, size, args.ela_quality, args.array_cache_dir)
+    elif needs_ela and args.ela_cache_dir and not args.skip_ela_warmup:
         warmup_ela_cache(args.data_dir, args.ela_quality, args.ela_cache_dir)
 
+    # One Namespace per job so run names and commands see that job's image size.
+    jobs = [(arch, mode, seed, argparse.Namespace(**{**vars(args), "image_size": size}))
+            for size, seed, arch, mode in product(
+                args.image_size, args.seeds, args.archs, args.input_modes)]
+    if args.gpus > 1:
+        # Longest runs first, so the last job to finish is a short one.
+        cost = {"swin_tiny": 3, "efficientnet_b0": 2, "resnet18_bilstm": 1, "mlp": 0}
+        jobs.sort(key=lambda j: -cost[j[0]])
+
     completed = load_completed(args.log_path)
-    total = len(args.seeds) * len(args.archs) * len(args.input_modes)
-    already = sum(
-        1 for seed in args.seeds for arch in args.archs for mode in args.input_modes
-        if run_name_for(arch, mode, seed, args) in completed)
-    print(f"\nSweep: {len(args.archs)} archs x {len(args.input_modes)} modes x {len(args.seeds)} seeds = {total} combos")
+    total = len(jobs)
+    already = sum(1 for a, m, s, j in jobs if run_name_for(a, m, s, j) in completed)
+    print(f"\nSweep: {len(args.image_size)} sizes x {len(args.archs)} archs x "
+          f"{len(args.input_modes)} modes x {len(args.seeds)} seeds = {total} combos "
+          f"on {args.gpus} GPU(s)")
     print(f"Already completed: {already}")
     print(f"Remaining: {total - already}")
 
-    done, failed = 0, 0
+    lock = threading.Lock()
+    free_gpus = queue.Queue()
+    for gpu in range(args.gpus):
+        free_gpus.put(gpu)
     started = time.monotonic()
-    for seed, arch, input_mode in product(args.seeds, args.archs, args.input_modes):
-        run_name = run_name_for(arch, input_mode, seed, args)
+
+    def work(job) -> bool | None:
+        arch, input_mode, seed, job_args = job
+        run_name = run_name_for(arch, input_mode, seed, job_args)
         if run_name in completed:
             print(f"\nSKIP: {run_name} (already in log)")
-            continue
+            return None
 
         elapsed_h = (time.monotonic() - started) / 3600
         if args.max_hours and elapsed_h >= args.max_hours:
             print(f"\nTIME BUDGET: {elapsed_h:.1f} h used >= {args.max_hours} h — "
-                  f"stopping before {run_name}; finished runs are persisted")
-            break
+                  f"not starting {run_name}; finished runs are persisted")
+            return None
 
-        ok = run_combo(arch, input_mode, seed, args)
+        gpu = free_gpus.get()
+        try:
+            ok = run_combo(arch, input_mode, seed, job_args,
+                           gpu=gpu if args.gpus > 1 else None, lock=lock)
+        finally:
+            free_gpus.put(gpu)
         if ok:
-            done += 1
-            completed.add(run_name)
-            persist_to_drive(
-                args.log_path,
-                None if args.no_persist_ela_cache else args.ela_cache_dir,
-                args.persist_dir, run_name, models_dir=args.out_dir)
-        else:
-            failed += 1
+            with lock:
+                completed.add(run_name)
+                persist_to_drive(
+                    args.log_path,
+                    None if args.no_persist_ela_cache else args.ela_cache_dir,
+                    args.persist_dir, run_name, models_dir=args.out_dir)
+                run_log = os.path.join(args.results_dir, "logs", f"{run_name}.log")
+                if args.persist_dir and os.path.exists(run_log):
+                    os.makedirs(os.path.join(args.persist_dir, "logs"), exist_ok=True)
+                    shutil.copy2(run_log, os.path.join(args.persist_dir, "logs"))
+        print(f"{'DONE' if ok else 'FAILED'}: {run_name}")
+        return ok
+
+    with ThreadPoolExecutor(max_workers=args.gpus) as pool:
+        results = list(pool.map(work, jobs))
+    done, failed = results.count(True), results.count(False)
 
     print(f"\n{'='*60}")
     print(f"SWEEP DONE: {done} new, {failed} failed, "

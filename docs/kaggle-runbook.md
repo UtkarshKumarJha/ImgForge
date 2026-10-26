@@ -74,6 +74,29 @@ depends only on the 36 real artefacts.
   It must carry `resnet18_bilstm` (≈10 h) and `swin_tiny` (≈15-22 h, two
   sessions). This account cannot: after v11 it has ≈3 h left.
 
+## Final stage (2026-10-26): best mode at the validation-selected size
+
+The 36-run grid wasted half of every session: `NvidiaTeslaT4` is a **T4 x2** machine and
+each run used one GPU, while two dataloader workers decoded the full-size image and a 1.2 MB
+ELA array per sample (~190 img/s at 224 px). Three changes, no change to what a run computes:
+
+- `run_sweep.py --array-cache-dir DIR` writes the deterministic `Resize(S, S)` of every
+  image and its ELA once (uint8 `.npy`, memory-mapped by the workers); augmentation still
+  runs per sample, so batches are identical to the uncached pipeline (`tests/test_array_cache.py`).
+- `run_sweep.py --gpus 2` trains two combos at once, one per T4, longest first; each run
+  writes `results/logs/<run>.log`, persisted to `persist/logs/` (epoch curves for the report).
+- `data/splits/casia2/` ships the exact split (fingerprint `79e78eb2…`), so a fresh kernel
+  copies it instead of re-hashing CASIA, and `persist/experiment_log.csv` is now restored.
+
+`--stage final` picks 320 vs 384 px on validation F1 (EfficientNet-B0 / ELA / seed 1, one
+size per GPU), then runs Swin-Tiny, EfficientNet-B0 and ResNet-18+BiLSTM on `ela` and the
+MLP on `rgb` (each architecture's best mode in the 224 px grid), 3 seeds, at that size:
+
+```bash
+python3 scripts/push_kernel.py --stage final --gpu --timeout 43200 \
+  --slug mayurrdas/imgforge-final --token-file ~/.kaggle/team_token --no-self-source
+```
+
 ## Gotcha: pushing does NOT stop the running session
 
 A push creates a *new batch session*; the old one keeps training and keeps
@@ -174,32 +197,33 @@ A kernel pushed while another session is running does **not** cancel that sessio
 double push costs a second full session of GPU quota. Push once, then check
 `kaggle kernels status`.
 
-## Final assembly: from the three sessions to the report tables
+## Final assembly: from the sweep sessions to the report tables
 
 ```bash
 # 1. one analysis directory, retries/ablations (`_p320`, `_concat`) left out on purpose
+#    (a --src that does not exist is an error, not a silent zero-run source)
 python scripts/merge_artefacts.py \
-  --src /tmp/outA/persist --src /tmp/outB1/persist --src /tmp/outB2/persist \
-  --out /tmp/merged
+  --src <A>/persist --src <B_resnet>/persist --src <B_swin12>/persist \
+  --src <B_swin3>/persist --out <merged>
 
 # 2. the per-architecture tables (best mode, per-seed CIs, documented retry section)
-python scripts/report_tables.py --log /tmp/merged/experiment_log.csv \
-  --retry-log /tmp/outA_retry/persist/experiment_log.csv --out-dir docs/results
+python scripts/report_tables.py --log <merged>/experiment_log.csv \
+  --retry-log <A_retry>/persist/experiment_log.csv --out-dir docs/results
 
 # 3. McNemar (two families, Holm within each) needs the complete arch x mode x seed grid
-python -m analysis.mcnemar --predictions /tmp/merged/predictions/*_test.npz \
-  --models-dir /tmp/merged/models --out docs/results/mcnemar.md
+python -m analysis.mcnemar --predictions <merged>/predictions/*_test.npz \
+  --models-dir <merged>/models --out docs/results/mcnemar.md
 
 # 4. the confound analysis needs the JPEG quality tables, so it needs the images.
 #    The npz stores Kaggle-absolute paths; rewrite them to the local CASIA root first
 #    (see scripts/../analysis/confound.py `_resolve`: relative paths join under --data-dir,
 #    absolute ones are used as given).
-python -m analysis.confound --predictions /tmp/local/pred/*_test.npz \
+python -m analysis.confound --predictions <local>/pred/*_test.npz \
   --data-dir <casia>/CASIA2 --out docs/results/confound.md
 
 # 5. localization: masks staged with the `_gt` suffix stripped (stems must match exactly)
-python -m analysis.localization --ckpt /tmp/merged/models/efficientnet_b0_ela_s3_best.pth \
-  --data-dir /tmp/local/data --masks-dir /tmp/local/masks \
+python -m analysis.localization --ckpt <merged>/models/efficientnet_b0_ela_s3_best.pth \
+  --data-dir <local>/data --masks-dir <local>/masks \
   --split test --out docs/results/localization.md
 ```
 
