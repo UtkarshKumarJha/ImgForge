@@ -7,6 +7,31 @@ Everything below is generated from artefacts, not from memory: the per-run log, 
 Status: **complete.** All 36 grid runs plus the documented EfficientNet 320 px retry and three
 ablation runs have landed; every table below is regenerated from the merged artefacts.
 
+## 0. Final comparison at 384 px (26 Oct 2026) — supersedes §2 and §3 for the headline
+
+Resolution chosen on validation (EfficientNet-B0 / ELA / seed 1: val macro-F1 0.8601 at 320 px,
+0.8736 at 384 px), then every architecture on its best 224 px mode × 3 seeds at 384 px, two runs
+at a time on the T4 x2 machine (`--stage final`, 4.4 h). Full tables: `docs/results/final_comparison.md`.
+
+| Model | Input | Macro-F1 (3 seeds) | ROC-AUC | 3-seed ensemble |
+|---|---|---:|---:|---:|
+| Swin-Tiny | ela | **0.8922 ± 0.0056** | 0.9690 | 0.8991 |
+| ResNet-18 + BiLSTM | ela | 0.8789 ± 0.0065 | 0.9571 | 0.8947 |
+| EfficientNet-B0 | ela | 0.8753 ± 0.0084 | 0.9582 | 0.8802 |
+| MLP | rgb | 0.5910 ± 0.0179 | 0.6571 | 0.6248 |
+
+McNemar Family B (Holm): Swin > EfficientNet-B0 (50 vs 19, p 7.3e-4), Swin > ResNet (46 vs 22,
+p 0.0098), EfficientNet-B0 ≈ ResNet (p 0.49), all ≫ MLP. Resolution reorders the ranking: at 224 px
+Swin and EfficientNet-B0 were tied and ResNet trailed. G1 met; G3 (0.90) missed; G4 (0.88) missed by
+0.001 single-run, met as an ensemble. Grad-CAM at 384 px (EfficientNet-B0): IoU 0.105, Dice 0.162
+(`docs/results/localization_p384.md`).
+
+**Correction to §4.3.** The ≈0.11 macro-F1 drop on the JPEG-only slice is mostly a prevalence
+effect (8% tampered there vs 26% overall). Prevalence-free checks: on quality-matched JPEGs
+(QF 80–89, 236 Au / 67 Tp) the ELA models keep ROC-AUC 0.94 / 0.95 / 0.91 (EffNet / Swin / ResNet,
+224 px) while RGB models degrade (ResNet 0.752 → 0.671). Quality does shift calibration: false
+positives concentrate on authentic JPEGs with QF ≥ 80 (FPR ≈ 22% vs 1% at QF 70–79).
+
 ## 1. Protocol (frozen before any run)
 
 | Item | Value |
@@ -103,11 +128,11 @@ Two things in this table are worth the report's attention rather than a shrugged
 
 First, fusion does add over RGB alone — McNemar on `rgb` vs `rgb_ela` is significant after Holm
 in all three architectures (§4.5) — but it recovers only part of what ELA alone already gives.
-The `ela`-vs-`rgb_ela` gap shrinks as the fusion mechanism improves: 0.111 for EfficientNet-B0
-and 0.083 for ResNet-18+BiLSTM, both of which use the design's `DualStem` (a pretrained RGB conv
-**summed with** a freshly initialised 1-channel aux conv, `model_factory.DualStem`, no scale or
-gate between them), versus 0.045 for Swin-Tiny, which concatenates the four input channels and
-mixes them through token projection and attention.
+The `ela`-vs-`rgb_ela` gap differs by architecture: 0.111 for EfficientNet-B0, 0.083 for
+ResNet-18+BiLSTM and 0.045 for Swin-Tiny. All three use the same `DualStem` (a pretrained RGB
+conv **summed with** a freshly initialised 1-channel aux conv, `model_factory.DualStem`, no scale
+or gate between them) — on Swin it replaces the patch embedding — so the stem does not explain
+the ordering; what differs is the network after it.
 
 Second, the obvious mechanical explanation for that ordering does not survive its own ablation.
 If the summed stem with default initialisation were the cause, `--fusion concat` should close
@@ -115,8 +140,8 @@ the gap. It does not — it is marginally *worse* in both CNNs:
 
 | Architecture | `rgb_ela` dual (3 seeds) | `rgb_ela` concat (3 seeds) | Difference |
 |---|---:|---:|---:|
-| EfficientNet-B0 | 0.7264 ± 0.0109 | 0.7211 ± 0.0049 | −0.005 |
-| ResNet-18 + BiLSTM | 0.7415 ± 0.0098 | 0.7308 ± 0.0067 | −0.011 |
+| EfficientNet-B0 | 0.7264 ± 0.0109 | 0.7211 ± 0.0060 | −0.005 |
+| ResNet-18 + BiLSTM | 0.7415 ± 0.0098 | 0.7308 ± 0.0083 | −0.011 |
 
 So the fusion *mode* is not what limits `rgb_ela`; fusing a weaker RGB stream into a strong ELA
 stream costs more than it adds on this dataset, however the fusion is done. The residual
