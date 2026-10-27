@@ -85,9 +85,14 @@ def test_gradcam_target_layer_accepts_explicit_and_inferred_arch():
     assert get_gradcam_target_layer(res, "resnet18_bilstm") is res.backbone[-1][-1]
     assert get_gradcam_target_layer(res) is res.backbone[-1][-1]
 
-    # The contract behind the Swin refusal: the chosen layer keeps (B, C, H, W).
+    swin = build_model("swin_tiny", "rgb_ela").eval()
+    assert get_gradcam_target_layer(swin, "swin_tiny") is swin.permute
+    assert get_gradcam_target_layer(swin) is swin.permute
+
+    # The contract: the chosen layer keeps (B, C, H, W).
     for model, layer, channels in ((eff, eff.features[-1], 1280),
-                                   (res, res.backbone[-1][-1], 512)):
+                                   (res, res.backbone[-1][-1], 512),
+                                   (swin, swin.permute, 768)):
         captured = {}
         handle = layer.register_forward_hook(
             lambda _m, _i, out: captured.setdefault("out", out))
@@ -99,7 +104,7 @@ def test_gradcam_target_layer_accepts_explicit_and_inferred_arch():
         assert out.shape[2] > 1 and out.shape[3] > 1
 
 
-@pytest.mark.parametrize("arch", ["swin_tiny", "mlp"])
+@pytest.mark.parametrize("arch", ["mlp"])
 def test_gradcam_target_layer_refuses_arches_without_a_spatial_conv_trunk(arch):
     model = build_model(arch, "rgb_ela")
     for call in (lambda: get_gradcam_target_layer(model, arch),

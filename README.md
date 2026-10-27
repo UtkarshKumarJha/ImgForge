@@ -345,7 +345,7 @@ ImgForge/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/MayurDas24/ImgForge.git
+git clone https://github.com/UtkarshKumarJha/ImgForge.git
 cd ImgForge
 ```
 
@@ -368,6 +368,12 @@ Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
+
+### 2b. Put the model in place
+
+The demo loads `models/imgforge_swin_tiny_ela_384.pth`: the final Swin-Tiny (ELA input, 384 px,
+seed 3) with its validation-tuned decision threshold (0.33). It is 110 MB, over GitHub's file
+limit, so it is not in the repository — copy it from a teammate's checkout into `models/`.
 
 ### 3. Start the FastAPI backend
 
@@ -405,7 +411,12 @@ Frontend:
 http://localhost:5173
 ```
 
-Upload an image and select **Analyze Image** to run the complete forensic pipeline.
+Upload an image and select **Analyze Image** to run the complete forensic pipeline
+(about 1 s per image on a laptop CPU).
+
+If port 8000 is taken, start the backend with `--port 8001` and the frontend with
+`VITE_API_URL=http://127.0.0.1:8001 npm run dev`. A single-process fallback is
+`streamlit run app.py`.
 
 ---
 

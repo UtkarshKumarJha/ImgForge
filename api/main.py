@@ -61,13 +61,18 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CHECKPOINT = os.path.join(
     ROOT_DIR,
     "models",
-    "best_model.pth"
+    "imgforge_swin_tiny_ela_384.pth"
 )
 
 print(f"Using device: {DEVICE}")
 print("Loading ImgForge model...")
 
 model, CFG = load_model(CHECKPOINT, DEVICE)
+# Validation-tuned cut used for every reported number; 0.5 for older checkpoints.
+THRESHOLD = torch.load(CHECKPOINT, map_location="cpu", weights_only=False).get("decision_threshold", 0.5)
+MODEL_NAME = {"swin_tiny": "Swin-Tiny", "efficientnet_b0": "EfficientNet-B0",
+              "resnet18_bilstm": "ResNet-18 + BiLSTM", "mlp": "MLP"}[CFG.get("arch", "efficientnet_b0")] \
+    + f" + {CFG.get('input_mode', 'rgb_ela').upper().replace('_', '+')} @ {CFG.get('image_size', 224)} px"
 
 target_layer = get_gradcam_target_layer(model)
 gradcam = GradCAM(model, target_layer)
@@ -106,7 +111,7 @@ def root():
     return {
         "status": "online",
         "service": "ImgForge API",
-        "model": "EfficientNet-B0 + ELA",
+        "model": MODEL_NAME,
         "device": DEVICE,
     }
 
@@ -118,14 +123,17 @@ def root():
 @app.post("/analyze")
 async def analyze_image(file: UploadFile = File(...)):
 
+    # CASIA's tampered images are mostly TIFF, so the demo must take them too.
     if file.content_type not in [
         "image/jpeg",
         "image/jpg",
         "image/png",
+        "image/tiff",
+        "image/bmp",
     ]:
         raise HTTPException(
             status_code=400,
-            detail="Only JPG, JPEG and PNG images are supported."
+            detail="Only JPG, PNG, TIFF and BMP images are supported."
         )
 
     temp_path = None
@@ -198,9 +206,7 @@ async def analyze_image(file: UploadFile = File(...)):
                 dim=1
             )[0]
 
-            pred_class = output.argmax(
-                dim=1
-            ).item()
+            pred_class = int(probabilities[1].item() >= THRESHOLD)
 
         confidence = probabilities[pred_class].item()
         forged_probability = probabilities[1].item()
@@ -308,7 +314,7 @@ async def analyze_image(file: UploadFile = File(...)):
 
             "gradcam_image": gradcam_base64,
 
-            "model": "EfficientNet-B0 + ELA",
+            "model": MODEL_NAME,
 
             "device": DEVICE,
         }

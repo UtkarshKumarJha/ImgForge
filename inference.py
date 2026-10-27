@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 
+from data.dataset import get_transforms
 from data.ela import compute_ela
 from model_factory import _input_channels, load_model_from_checkpoint
 
@@ -31,25 +32,17 @@ def load_model(checkpoint_path: str, device: str) -> tuple[nn.Module, dict]:
 def preprocess(image_path: str, device: str, image_size: int = IMAGE_SIZE,
                input_mode: str = INPUT_MODE) -> tuple:
     """Preprocess a single image into the checkpoint's channel layout."""
-    rgb = np.array(Image.open(image_path).convert("RGB"), dtype=np.float32) / 255.0
-
-    rgb_resized = np.array(
-        Image.fromarray((rgb * 255).astype(np.uint8)).resize(
-            (image_size, image_size), Image.BILINEAR
-        ), dtype=np.float32
-    ) / 255.0
+    # Same steps as ForgeryDataset at evaluation time, so the demo scores what the model saw.
+    rgb = np.array(Image.open(image_path).convert("RGB"))
+    ela = (compute_ela(image_path, use_cache=False) * 255).astype(np.uint8)
+    out = get_transforms("val", image_size)[0](image=rgb, ela=ela)
+    rgb_resized = out["image"].astype(np.float32) / 255.0
 
     mean = np.array(IMAGENET_MEAN, dtype=np.float32)
     std = np.array(IMAGENET_STD, dtype=np.float32)
     rgb_norm = (rgb_resized - mean) / std
 
-    ela = compute_ela(image_path)
-    ela_resized = np.array(
-        Image.fromarray((ela * 255).astype(np.uint8)).resize(
-            (image_size, image_size), Image.BILINEAR
-        ), dtype=np.float32
-    ) / 255.0
-    ela_gray = ela_resized.mean(axis=2)
+    ela_gray = out["ela"].astype(np.float32).mean(axis=2) / 255.0
     ela_gray = (ela_gray - 0.5) / 0.5
 
     rgb_t = torch.from_numpy(rgb_norm.transpose(2, 0, 1)).float()

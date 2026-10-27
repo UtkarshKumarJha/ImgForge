@@ -132,7 +132,7 @@ function App() {
 
           <p>
             Upload an image and ImgForge analyzes visual and compression
-            artifacts using EfficientNet-B0, Error Level Analysis and Grad-CAM.
+            artifacts using Swin-Tiny, Error Level Analysis and Grad-CAM.
           </p>
         </section>
 
@@ -267,7 +267,7 @@ function App() {
                   Choose Image
                 </button>
 
-                <span>JPEG, JPG, PNG supported</span>
+                <span>JPEG, PNG, TIFF, BMP supported</span>
               </div>
             ) : (
               <div className="preview-container">
@@ -291,7 +291,7 @@ function App() {
             <input
               ref={inputRef}
               type="file"
-              accept="image/png,image/jpeg"
+              accept="image/png,image/jpeg,image/tiff,image/bmp"
               hidden
               onChange={handleFileChange}
             />
@@ -472,7 +472,7 @@ function App() {
         </section>
 
         <section className="technology">
-          <span>EfficientNet-B0</span>
+          <span>Swin-Tiny</span>
           <span>Error Level Analysis</span>
           <span>Grad-CAM</span>
           <span>PyTorch</span>
