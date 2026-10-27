@@ -114,12 +114,11 @@ def _infer_arch(model: nn.Module) -> str:
 
 
 def get_gradcam_target_layer(model: nn.Module, arch: str | None = None) -> nn.Module:
-    """Return the last block that keeps a (B, C, H, W) conv feature map.
+    """Return the last block that keeps a (B, C, H, W) feature map.
 
     Grad-CAM reduces gradients over dims (2, 3) as if the output were (B, C, H, W).
-    Swin's blocks are channels-last (B, H, W, C) and the MLP has no conv trunk, so
-    neither can produce a meaningful heatmap; both raise instead of returning a layer
-    that would silently yield a meaningless map.
+    Swin's blocks are channels-last, but torchvision ends the trunk with a Permute to
+    (B, C, H, W), which is used instead. The MLP has no spatial trunk, so it raises.
     """
     arch = arch or _infer_arch(model)
     if arch == "efficientnet_b0":
@@ -127,9 +126,7 @@ def get_gradcam_target_layer(model: nn.Module, arch: str | None = None) -> nn.Mo
     if arch == "resnet18_bilstm":
         return model.backbone[-1][-1]
     if arch == "swin_tiny":
-        raise ValueError(
-            "Grad-CAM is not supported for arch 'swin_tiny': its blocks are channels-last "
-            "(B, H, W, C), so a (B, C, H, W) Grad-CAM would be meaningless")
+        return model.permute
     if arch == "mlp":
         raise ValueError(
             "Grad-CAM is not supported for arch 'mlp': the model has no convolutional "

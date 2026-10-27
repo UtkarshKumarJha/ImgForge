@@ -9,10 +9,11 @@ import os
 
 from data.ela import compute_ela
 from gradcam import GradCAM, overlay_heatmap, parse_tamper_zone, get_gradcam_target_layer
-from model_factory import input_spec, load_model_from_checkpoint
+from inference import preprocess
+from model_factory import load_model_from_checkpoint
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CHECKPOINT  = "models/best_model.pth"
+CHECKPOINT  = "models/imgforge_swin_tiny_ela_384.pth"
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -85,46 +86,21 @@ def load_model():
     ckpt = torch.load(CHECKPOINT, map_location=DEVICE, weights_only=False)
     model = load_model_from_checkpoint(ckpt, DEVICE)
     model.eval()
-    return model, ckpt["val_f1"], ckpt["epoch"], ckpt.get("cfg", {})
+    cfg = {**ckpt.get("cfg", {}), "decision_threshold": ckpt.get("decision_threshold", 0.5)}
+    return model, ckpt["val_f1"], ckpt["epoch"], cfg
 
 
-def preprocess_pil(pil_image: Image.Image, tmp_path: str, cfg=None):
-    channels, image_size = input_spec(cfg or {})
-    pil_image.save(tmp_path, format="JPEG", quality=95)
-
-    rgb = np.array(pil_image.convert("RGB"), dtype=np.float32) / 255.0
-    rgb_resized = np.array(
-        Image.fromarray((rgb * 255).astype(np.uint8)).resize(
-            (image_size, image_size), Image.BILINEAR
-        ), dtype=np.float32
-    ) / 255.0
-
-    mean = np.array(IMAGENET_MEAN, dtype=np.float32)
-    std  = np.array(IMAGENET_STD,  dtype=np.float32)
-    rgb_norm = (rgb_resized - mean) / std
-
-    ela = compute_ela(tmp_path)
-    ela_resized = np.array(
-        Image.fromarray((ela * 255).astype(np.uint8)).resize(
-            (image_size, image_size), Image.BILINEAR
-        ), dtype=np.float32
-    ) / 255.0
-    ela_gray = ela_resized.mean(axis=2)
-    ela_gray = (ela_gray - 0.5) / 0.5
-
-    rgb_t = torch.from_numpy(rgb_norm.transpose(2, 0, 1)).float()
-    ela_t = torch.from_numpy(ela_gray).unsqueeze(0).float()
-    parts = []
-    if channels != 1:       # rgb, rgb_ela
-        parts.append(rgb_t)
-    if channels != 3:       # ela, rgb_ela
-        parts.append(ela_t)
-    tensor = torch.cat(parts, dim=0).unsqueeze(0).to(DEVICE)
-
-    return tensor, rgb_resized, ela
+def preprocess_pil(uploaded, tmp_path: str, cfg=None):
+    """Write the upload unchanged (re-encoding it would rewrite the history ELA measures)."""
+    with open(tmp_path, "wb") as f:
+        f.write(uploaded.getvalue())
+    cfg = cfg or {}
+    tensor, rgb_resized = preprocess(tmp_path, DEVICE, cfg.get("image_size", 224),
+                                     cfg.get("input_mode", "rgb_ela"))
+    return tensor, rgb_resized, compute_ela(tmp_path, use_cache=False)
 
 
-def run_inference(model, tensor):
+def run_inference(model, tensor, threshold=0.5):
     tensor.requires_grad_(True)
     target_layer = get_gradcam_target_layer(model)
     gradcam = GradCAM(model, target_layer)
@@ -133,7 +109,7 @@ def run_inference(model, tensor):
         output = model(tensor)
 
     probs = torch.softmax(output, dim=1)[0]
-    pred_class = output.argmax(dim=1).item()
+    pred_class = int(probs[1].item() >= threshold)
     confidence = probs[pred_class].item()
     forged_prob = probs[1].item()
 
@@ -228,8 +204,9 @@ def main():
 
     with st.spinner("Running ImgForge analysis..."):
         try:
-            tensor, rgb_vis, ela = preprocess_pil(pil_image, tmp_path, cfg)
-            pred_class, confidence, forged_prob, cam, zone_info = run_inference(model, tensor)
+            tensor, rgb_vis, ela = preprocess_pil(uploaded, tmp_path, cfg)
+            pred_class, confidence, forged_prob, cam, zone_info = run_inference(
+                model, tensor, cfg["decision_threshold"])
         except Exception as e:
             st.error(f"Inference failed: {e}")
             return
@@ -298,10 +275,7 @@ def main():
 
     with v3:
         st.markdown("**Grad-CAM Heatmap** — Red = Suspicious region")
-        rgb_resized_full = np.array(
-            pil_image.resize((IMAGE_SIZE, IMAGE_SIZE)), dtype=np.float32
-        ) / 255.0
-        heatmap = make_heatmap(rgb_resized_full, cam)
+        heatmap = make_heatmap(rgb_vis, cam)
         heatmap_pil = Image.fromarray(
             cv2.resize(heatmap, (pil_image.width, pil_image.height))
         )
