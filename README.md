@@ -380,19 +380,19 @@ limit, so it is not in the repository — copy it from a teammate's checkout int
 From the project root:
 
 ```bash
-python -m uvicorn api.main:app --reload
+python -m uvicorn api.main:app --port 8765
 ```
 
 Backend:
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:8765
 ```
 
 Interactive API documentation:
 
 ```text
-http://127.0.0.1:8000/docs
+http://127.0.0.1:8765/docs
 ```
 
 ### 4. Start the React frontend
@@ -408,14 +408,14 @@ npm run dev
 Frontend:
 
 ```text
-http://localhost:5173
+http://localhost:5180
 ```
 
 Upload an image and select **Analyze Image** to run the complete forensic pipeline
 (about 1 s per image on a laptop CPU).
 
-If port 8000 is taken, start the backend with `--port 8001` and the frontend with
-`VITE_API_URL=http://127.0.0.1:8001 npm run dev`. A single-process fallback is
+The demo uses ports 8765 (API) and 5180 (frontend) so it can run next to other local apps.
+A single-process fallback is
 `streamlit run app.py`.
 
 ---
